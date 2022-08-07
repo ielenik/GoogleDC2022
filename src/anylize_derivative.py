@@ -777,17 +777,12 @@ def calc_track_speed(trip_id):
             def rotate_all(vals, ang):
                 res = []
                 for v in vals:
-                    ret
-                    if len(ang) < len(v):
-                        v = v[:len(ang)]
-
-                speeds_init_gt_rot = np.stack([speeds_init_gt[:,0]*np.cos(ga) - speeds_init_gt[:,1]*np.sin(ga), speeds_init_gt[:,1]*np.cos(ga) + speeds_init_gt[:,0]*np.sin(ga) ], axis = -1)*1000/timedif.reshape(-1,1)
+                    res.append(rotate(v,ang))
+                return res
             # speed_loss = conv_numpy(speed_loss)
             acsp, acsgt, acsr = imu_model.get_acses([speeds, gt_speed,orients,times_dif])
             acsp, acsgt, acsr = acsp.numpy(), acsgt.numpy(), acsr.numpy()
-            acsp_rot = np.stack([acsp[:,0]*np.cos(ga) - acsp[:,1]*np.sin(ga), acsp[:,1]*np.cos(ga) + acsp[:,0]*np.sin(ga) ], axis = -1)
-            acsgt_rot = np.stack([acsgt[:,0]*np.cos(ga) - acsgt[:,1]*np.sin(ga), acsgt[:,1]*np.cos(ga) + acsgt[:,0]*np.sin(ga) ], axis = -1)
-            acsr_rot = np.stack([acsr[:,0]*np.cos(ga) - acsr[:,1]*np.sin(ga), acsr[:,1]*np.cos(ga) + acsr[:,0]*np.sin(ga) ], axis = -1)
+            acsp_rot, acsgt_rot, acsr_rot = rotate_all([acsp, acsgt, acsr], ga)
 
             plt.clf()
             plt.ylim([-2,24])
@@ -808,9 +803,7 @@ def calc_track_speed(trip_id):
             save_fig(image_path+'acc\\accel_'+str(step).zfill(3)+'.png')
             ga = -quats_np[:,2]
 
-
-            speeds_init_gt_rot = np.stack([speeds_init_gt[:,0]*np.cos(ga) - speeds_init_gt[:,1]*np.sin(ga), speeds_init_gt[:,1]*np.cos(ga) + speeds_init_gt[:,0]*np.sin(ga) ], axis = -1)*1000/timedif.reshape(-1,1)
-            speeds_init_pred_rot = np.stack([speeds_init_pred[:,0]*np.cos(ga) - speeds_init_pred[:,1]*np.sin(ga), speeds_init_pred[:,1]*np.cos(ga) + speeds_init_pred[:,0]*np.sin(ga) ], axis = -1)*1000/timedif.reshape(-1,1)
+            speeds_init_gt_rot, speeds_init_pred_rot = rotate_all([speeds_init_gt, speeds_init_pred], ga)
 
             plt.clf()
             plt.plot( np.arange(len(speeds_init_gt)), speeds_init_gt_rot/10)
@@ -837,8 +830,7 @@ def calc_track_speed(trip_id):
                         plt.plot( np.arange(1000), np.zeros((1000) + curs*2))
                     else:
                         v = v.numpy()[:,:2]
-                        gal = ga[:len(v)]
-                        v_rot = np.stack([v[:,0]*np.cos(gal) - v[:,1]*np.sin(gal), v[:,1]*np.cos(gal) + v[:,0]*np.sin(gal) ], axis = -1)
+                        v_rot = rotate(v, ga)[:,:2]
                         plt.plot( np.arange(len(v)), v_rot[:,i]*5 + curs*2)
                     curs += 1
                 plt.legend(leg)
@@ -859,14 +851,15 @@ def calc_track_speed(trip_id):
             error_sh = ndimage.median_filter(pred_pos - baselines, (100,1))
             error_sh = pred_pos-true_pos
             error_sh_rot = error_sh
-            error_sh_rot = np.stack([error_sh[:,0]*np.cos(ga) - error_sh[:,1]*np.sin(ga), error_sh[:,1]*np.cos(ga) + error_sh[:,0]*np.sin(ga) ], axis = -1)
+            error_sh_rot = rotate(error_sh, ga)[:,:2]
 
             plt.clf()
             plt.plot( np.arange(len(true_pos)), error_sh_rot[:,0])
             plt.plot( np.arange(len(true_pos)), error_sh_rot[:,1])
             plt.plot( np.arange(len(pred_pos)-1), (pred_pos[1:,2] - pred_pos[:-1,2])/10)
             psevdo_grad = gradients["psevdo"].numpy()
-            psevdo_grad_rot = np.stack([psevdo_grad[:,0]*np.cos(ga) - psevdo_grad[:,1]*np.sin(ga), psevdo_grad[:,1]*np.cos(ga) + error_sh[:,0]*np.sin(ga) ], axis = -1)
+            psevdo_grad = np.cumsum(psevdo_grad)
+            psevdo_grad_rot = rotate(psevdo_grad,ga)[:,:2]
             # bias_np = -psevdo_model.shift_pp.numpy()[:,:2]
             # plt.plot( np.arange(len(bias_np)), bias_np)
 
