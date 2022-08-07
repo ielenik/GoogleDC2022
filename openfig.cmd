@@ -1,0 +1,1 @@
+python C:\projects\python\GoogleDC2\openfig.py %1
