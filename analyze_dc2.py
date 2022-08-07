@@ -21,7 +21,7 @@ start_path = "2020-12-10-US-SJC-2\\XiaomiMi8\\" #BAD GT in begin and end
 start_path = "2021-04-26-US-SVL-2\\SamsungGalaxyS20Ultra\\" #2.5010
 start_path = "2020-05-29-US-MTV-1\\GooglePixel4\\" #<0.8
 start_path = "2021-12-09-US-LAX-2\\XiaomiMi8\\" #2.00
-#start_path = "2021-04-26-US-SVL-2\\XiaomiMi8\\" #1.82
+start_path = "2021-04-26-US-SVL-2\\XiaomiMi8\\" #1.82
 #start_path = "2020-07-24-US-MTV-1\\GooglePixel5\\"
 
 
