@@ -773,7 +773,7 @@ def calc_track_speed(trip_id):
                     ga = ang
                 else:
                     ga = ang[:len(v)]
-                return np.stack([v[:,0]*np.cos(ga) - v[:,1]*np.sin(ga), v[:,1]*np.cos(ga) + v[:,0]*np.sin(ga), v[:,2] ], axis = -1)
+                return np.stack([v[:,0]*np.cos(ga) - v[:,1]*np.sin(ga), v[:,1]*np.cos(ga) + v[:,0]*np.sin(ga)], axis = -1)
             def rotate_all(vals, ang):
                 res = []
                 for v in vals:
@@ -829,8 +829,7 @@ def calc_track_speed(trip_id):
                     if v is None:
                         plt.plot( np.arange(1000), np.zeros((1000) + curs*2))
                     else:
-                        v = v.numpy()[:,:2]
-                        v_rot = rotate(v, ga)[:,:2]
+                        v_rot = rotate(v.numpy(), ga)
                         plt.plot( np.arange(len(v)), v_rot[:,i]*5 + curs*2)
                     curs += 1
                 plt.legend(leg)
@@ -851,15 +850,16 @@ def calc_track_speed(trip_id):
             error_sh = ndimage.median_filter(pred_pos - baselines, (100,1))
             error_sh = pred_pos-true_pos
             error_sh_rot = error_sh
-            error_sh_rot = rotate(error_sh, ga)[:,:2]
+            error_sh_rot = rotate(error_sh, ga)
 
             plt.clf()
             plt.plot( np.arange(len(true_pos)), error_sh_rot[:,0])
             plt.plot( np.arange(len(true_pos)), error_sh_rot[:,1])
             plt.plot( np.arange(len(pred_pos)-1), (pred_pos[1:,2] - pred_pos[:-1,2])/10)
             psevdo_grad = gradients["psevdo"].numpy()
-            psevdo_grad = np.cumsum(psevdo_grad)
-            psevdo_grad_rot = rotate(psevdo_grad,ga)[:,:2]
+            psevdo_grad = np.cumsum(psevdo_grad, axis = 0)
+            psevdo_grad_rot = rotate(psevdo_grad,ga)
+            plt.plot( np.arange(len(psevdo_grad_rot)), psevdo_grad_rot)
             # bias_np = -psevdo_model.shift_pp.numpy()[:,:2]
             # plt.plot( np.arange(len(bias_np)), bias_np)
 
@@ -873,7 +873,7 @@ def calc_track_speed(trip_id):
             sat_deltaspeeduncertcount[sat_deltaspeeduncertcount< 10] = 0
             plt.plot( np.arange(len(sat_deltaspeeduncertcount)), sat_deltaspeeduncertcount, marker='o', linestyle = None)
             
-            plt.legend(['dif x', 'dif y', 'speed z','deltas', 'speeds15', 'speeds10'])
+            plt.legend(['dif x', 'dif y', 'speed z','px','py', 'deltas', 'speeds15', 'speeds10'])
             save_fig(image_path+'sft\\track_shift'+str(step).zfill(3)+'.png')
 
             plt.clf()

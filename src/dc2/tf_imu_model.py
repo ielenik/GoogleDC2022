@@ -129,8 +129,9 @@ class RigidModelImu(tf.keras.layers.Layer):
  
         right_dir = self.get_right(angles_cum)
         speed_grad = tf.reduce_sum(speed*right_dir, axis = -1)
-        speed_loss = tf.square(speed_grad/(1+my_norm(gyrl)*100))
-        speed_grad = tf.reshape(speed_grad/(1+my_norm(gyrl)*100),(-1,1))*right_dir
+        gyrl_long = tf.concat([[[0,0,0]],gyrl], axis=0)
+        speed_loss = tf.square(speed_grad/(1+my_norm(gyrl_long)*100))
+        speed_grad = tf.reshape(speed_grad/(1+my_norm(gyrl_long)*100),(-1,1))*right_dir
         speed_loss = (speed_loss[1:]+speed_loss[:-1])
 
 
