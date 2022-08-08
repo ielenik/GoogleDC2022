@@ -519,12 +519,12 @@ def calc_track_speed(trip_id):
             gradients["speed_grad"]   = speed_grad
             gradients["acs_grad"] = acs_grad
             gradients["physics"] = tape.gradient(speeds_loss_glob, [speeds])[0]
-            gradients["psevdo"] = psevdo_grad
-            #gradients["psevdo"] = gradients["psevdo"][1:] - gradients["psevdo"][:-1]
+            #gradients["psevdo"] = psevdo_grad
+            gradients["psevdo"] = tape.gradient(psevdo_loss, [speeds])[0]
             #gradients["acs_grad"]   = norm_grad(gradients["acs_grad"]) 
             #gradients["speed_grad"] = norm_grad(gradients["speed_grad"])
             gradients["physics"] = norm_grad(gradients["physics"])
-            #gradients["psevdo"]   = norm_grad(gradients["psevdo"])
+            gradients["psevdo"]   = norm_grad(gradients["psevdo"])
             #gradients["phase"] = norm_grad(gradients["phase"])*10
             #gradients["dopler"]   = norm_grad(gradients["dopler"])*10
 
@@ -547,17 +547,25 @@ def calc_track_speed(trip_id):
             #psevdo_grad = psevdo_model.shift_pp[1:]-psevdo_model.shift_pp[:-1]
             #gradients['psevdo'] = psevdo_grad
 
-            if not useimuloss:
-                optimizer.apply_gradients(zip([gradients["phase"]], [speeds]))   
-                optimizer.apply_gradients(zip([gradients["dopler"]/10], [speeds]))   
-                optimizer.apply_gradients(zip([gradients["physics"]/100], [speeds]))   
-                optimizer.apply_gradients(zip([gradients["psevdo"]/100], [speeds]))   
-            else:
-                optimizer.apply_gradients(zip([gradients["phase"]], [speeds]))   
-                optimizer.apply_gradients(zip([gradients["dopler"]/10], [speeds]))   
-                optimizer.apply_gradients(zip([gradients["speed_grad"]/20], [speeds]))   
-                optimizer.apply_gradients(zip([gradients["acs_grad"]/20], [speeds]))   
-                optimizer.apply_gradients(zip([gradients["psevdo"]/100], [speeds]))   
+            optimizer.apply_gradients(zip([gradients["phase"] * 1e-4], [speeds]))   
+            optimizer.apply_gradients(zip([gradients["dopler"]* 1e-5], [speeds]))   
+            optimizer.apply_gradients(zip([gradients["physics"]* 1e-6], [speeds]))   
+            optimizer.apply_gradients(zip([gradients["psevdo"]* 1e-5], [speeds]))   
+            optimizer.apply_gradients(zip([gradients["speed_grad"]*1e-6], [speeds]))   
+            optimizer.apply_gradients(zip([gradients["acs_grad"]*1e-6], [speeds]))   
+            # if not useimuloss:
+            #     optimizer.apply_gradients(zip([gradients["phase"] * 1e-4], [speeds]))   
+            #     optimizer.apply_gradients(zip([gradients["dopler"]* 1e-5], [speeds]))   
+            #     optimizer.apply_gradients(zip([gradients["physics"]* 1e-6], [speeds]))   
+            #     optimizer.apply_gradients(zip([gradients["psevdo"]* 1e-5], [speeds]))   
+            #     optimizer.apply_gradients(zip([gradients["speed_grad"]*1e-6], [speeds]))   
+            #     optimizer.apply_gradients(zip([gradients["acs_grad"]*1e-6], [speeds]))   
+            # else:
+            #     optimizer.apply_gradients(zip([gradients["phase"]], [speeds]))   
+            #     optimizer.apply_gradients(zip([gradients["dopler"]/10], [speeds]))   
+            #     optimizer.apply_gradients(zip([gradients["speed_grad"]/20], [speeds]))   
+            #     optimizer.apply_gradients(zip([gradients["acs_grad"]/20], [speeds]))   
+            #     optimizer.apply_gradients(zip([gradients["psevdo"]/10000], [speeds]))   
                 #speeds.assign_sub(gradients["speed_grad"]/300)
                 #speeds.assign_sub(gradients["acs_grad"]/300)
 
@@ -856,10 +864,10 @@ def calc_track_speed(trip_id):
             plt.plot( np.arange(len(true_pos)), error_sh_rot[:,0])
             plt.plot( np.arange(len(true_pos)), error_sh_rot[:,1])
             plt.plot( np.arange(len(pred_pos)-1), (pred_pos[1:,2] - pred_pos[:-1,2])/10)
-            psevdo_grad = gradients["psevdo"].numpy()
-            psevdo_grad = np.cumsum(psevdo_grad, axis = 0)
-            psevdo_grad_rot = rotate(psevdo_grad,ga)
-            plt.plot( np.arange(len(psevdo_grad_rot)), psevdo_grad_rot)
+            # psevdo_grad = gradients["psevdo"].numpy()
+            # psevdo_grad = np.cumsum(psevdo_grad, axis = 0)
+            # psevdo_grad_rot = rotate(psevdo_grad,ga)
+            # plt.plot( np.arange(len(psevdo_grad_rot)), psevdo_grad_rot)
             # bias_np = -psevdo_model.shift_pp.numpy()[:,:2]
             # plt.plot( np.arange(len(bias_np)), bias_np)
 
@@ -873,7 +881,7 @@ def calc_track_speed(trip_id):
             sat_deltaspeeduncertcount[sat_deltaspeeduncertcount< 10] = 0
             plt.plot( np.arange(len(sat_deltaspeeduncertcount)), sat_deltaspeeduncertcount, marker='o', linestyle = None)
             
-            plt.legend(['dif x', 'dif y', 'speed z','px','py', 'deltas', 'speeds15', 'speeds10'])
+            plt.legend(['dif x', 'dif y', 'speed z', 'deltas', 'speeds15', 'speeds10'])
             save_fig(image_path+'sft\\track_shift'+str(step).zfill(3)+'.png')
 
             plt.clf()

@@ -26,7 +26,7 @@ start_path = "2021-01-04-US-SFO-2\\GooglePixel4XL\\" #1.82
 
 
 
-start_path = "*\\*\\"
+#start_path = "*\\*\\"
 paths = gl.glob("D:\\databases\\smartphone-decimeter-2022\\train\\"+start_path)
 #random.shuffle(paths)
 existent = []

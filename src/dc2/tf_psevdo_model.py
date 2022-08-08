@@ -59,7 +59,7 @@ class PsevdoModel(tf.keras.layers.Layer):
         median = self.calc_median(mes_est,self.weight)
         mes_est -= median
         grad = tf.reduce_sum(self.dir*tf.expand_dims(mes_est*self.weight,-1), axis = 1)
-        grad = tf.reshape(tf.nn.avg_pool1d(tf.reshape(grad,(1,-1,3)),60,1,'SAME'),(-1,3))
+        #grad = tf.reshape(tf.nn.avg_pool1d(tf.reshape(grad,(1,-1,3)),60,1,'SAME'),(-1,3))
         grad = grad[1:] - grad[:-1]
 
         loss = tf.reduce_mean(tf.abs(mes_est)*self.weight, axis = -1)
