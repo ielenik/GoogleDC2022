@@ -1,5 +1,8 @@
+try:
+    import pickle5 as pickle
+except:
+    import pickle
 
-import pickle
 import os
 import numpy as np
 import georinex as gr
