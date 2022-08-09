@@ -6,12 +6,19 @@ import pickle
 from os.path import exists
 import os
 from src.laika.lib.coordinates import ecef2geodetic, geodetic2ecef
-from src.anylize_derivative import export_baseline, export_times
+from src.anylize_derivative import load_baseline, load_times
 from scipy import ndimage, misc
 import matplotlib.pyplot as plt
 from src.utils.kml_writer import KMLWriter
 from sklearn.linear_model import LinearRegression
 
+def interp_3d(times, times_true, poses):
+    if len(times) == len(poses):
+        return poses
+    bs = []
+    for i in range(3):
+        bs.append(np.interp(times, times_true, poses[:,i]))
+    return np.array(bs).T
 
 submission = pd.read_csv(r'D:\databases\smartphone-decimeter-2022\sample_submission.csv')
 google = pd.read_csv(r'D:\databases\smartphone-decimeter-2022\google_baseline.csv')
@@ -35,8 +42,6 @@ ecef_shifts = []
 for i, dirname in enumerate(paths):
     drive, phone = dirname.split('\\')[-3:-1]
     result_name = '\\result0.pkl'
-    if phone == 'XiaomiMi8':
-        result_name = '\\result1.pkl'
     if not exists(dirname+result_name):
         continue
     if phone not in phones:
@@ -57,6 +62,12 @@ for i, dirname in enumerate(paths):
     gt_np = gt_raw[['LatitudeDegrees','LongitudeDegrees','AltitudeMeters']].to_numpy()
     gt_np[np.isnan(gt_np)] = 0
     gt_np = geodetic2ecef(gt_np)
+
+    if len(gt_np) != len(poses):
+        times = gt_raw['UnixTimeMillis'].to_numpy()
+        times_true =  load_times(f"\\train\{drive}\\{phone}")
+        poses = interp_3d(times,times_true,poses)
+
 
     coords_start = np.median(gt_np[0:15], axis = 0)
     
@@ -113,13 +124,8 @@ err_by_phone = {}
 for i, dirname in enumerate(paths):
     drive, phone = dirname.split('\\')[-3:-1]
     result_name = '\\result0.pkl'
-    if phone == 'XiaomiMi8':
-        result_name = '\\result1.pkl'
     if not exists(dirname+result_name):
         continue
-    if not exists(dirname+'\\baseline.pkl'):
-        tripID = f"\\train\{drive}\\{phone}"
-        export_baseline(tripID)
     j += 1
     track_type = drive.split('-')[-2]
     if not track_type in tracks:
@@ -127,12 +133,11 @@ for i, dirname in enumerate(paths):
 
     with open(dirname+result_name, 'rb') as f:
         poses =  pickle.load(f)
-    with open(dirname+'\\baseline.pkl', 'rb') as f:
-        baseline =  pickle.load(f)
+
+    baseline =  load_baseline(f"\\train\{drive}\\{phone}")
 
 
     poses = geodetic2ecef(poses)
-    model_shifts = model.predict(poses)
     if np.sum(np.isnan(poses)) > 0:
         print("error in poses")
         os.remove(dirname+'\\result0.pkl')
@@ -141,6 +146,14 @@ for i, dirname in enumerate(paths):
     gt_np = gt_raw[['LatitudeDegrees','LongitudeDegrees','AltitudeMeters']].to_numpy()
     gt_np[np.isnan(gt_np)] = 0
     gt_np = geodetic2ecef(gt_np)
+
+    if len(gt_np) != len(poses) or len(gt_np) != len(baseline):
+        times = gt_raw['UnixTimeMillis'].to_numpy()
+        times_true =  load_times(f"\\train\{drive}\\{phone}")
+        poses = interp_3d(times,times_true,poses)
+        baseline = interp_3d(times,times_true,baseline)
+
+    model_shifts = model.predict(poses)
 
     coords_start = np.median(gt_np[0:15], axis = 0)
     
@@ -237,17 +250,11 @@ for i, dirname in enumerate(paths):
         print(drive, phone,result_name,'not exists')
         continue
 
-    if not exists(dirname+'\\baseline.pkl'):
-        tripID = f"\\test\\{drive}\\{phone}"
-        export_baseline(tripID)
     tripID = f"{drive}/{phone}"
     times = submission[tripID == submission['tripId']]['UnixTimeMillis'].to_numpy()
 
-    if not exists(dirname+'\\times.pkl'):
-        trip = f"\\test\{drive}\\{phone}"
-        export_times(trip)
-    with open(dirname+'\\times.pkl', 'rb') as f:
-        times_true =  pickle.load(f)
+    times_true =  load_times(f"\\train\{drive}\\{phone}")
+    baseline =  load_baseline(f"\\train\{drive}\\{phone}")
 
     j += 1
     track_type = drive.split('-')[-2]
@@ -256,9 +263,6 @@ for i, dirname in enumerate(paths):
 
     with open(dirname+result_name, 'rb') as f:
         poses =  pickle.load(f)
-    with open(dirname+'\\baseline.pkl', 'rb') as f:
-        baseline =  pickle.load(f)
-
 
     poses = geodetic2ecef(poses)
     if np.sum(np.isnan(poses)) > 0:
@@ -378,8 +382,7 @@ for i, dirname in enumerate(paths):
     name = None
     if exists(dirname+'result0.pkl.00'):
         name = 'result0.pkl.00'
-    if exists(dirname+'result1.pkl'):
-        name = 'result1.pkl'
+
     if name != None:
         with open(dirname+name, 'rb') as f:
             poses1 =  local_transform(geodetic2ecef(pickle.load(f)))+np.mean(tracks[track_type], axis = 0)

@@ -43,12 +43,12 @@ class RigidModelImu(tf.keras.layers.Layer):
         #self.gyro_scale = tf.Variable([[1,1,1]], name = 'gyro_scale', trainable=True, dtype = tf.float32)
         self.acs_windows = tf.Variable(np.ones(16).reshape((16,1,1))/16, name = 'acs_mean_window', trainable=False, dtype = tf.float32)
         
-        acs = self.callconv_acel(self.acs)
-        acs = tf.linalg.norm(acs, axis = -1, keepdims = True) - 9.81
-        acs = self.callconv2(tf.abs(acs),self.acs_windows)
-        acs = tf.reshape(acs, (-1,))
+        gyr = self.callconv_acel(self.gyr)
+        gyr = tf.linalg.norm(gyr*[5,0,5], axis = -1)
+        #gyr = self.callconv2(tf.abs(acs),self.acs_windows)
+        #acs = tf.reshape(acs, (-1,))
         #self.acs_error_scale = tf.Variable(1/(1+acs*5), name = 'acs_error_scale', trainable=False, dtype = tf.float32)
-        self.acs_error_scale = tf.Variable(1, name = 'acs_error_scale', trainable=False, dtype = tf.float32)
+        self.excluded_epoch = tf.Variable(tf.concat([[0],tf.cast(gyr < 1.0,tf.float32)],axis=0), name = 'acs_error_scale', trainable=False, dtype = tf.float32)
 
     def build(self, input_shape):
         super(RigidModelImu, self).build(input_shape)
@@ -92,7 +92,6 @@ class RigidModelImu(tf.keras.layers.Layer):
     def call(self, inputs):
         speed, angles_cum, times_dif, rotate_gyro = inputs
         speed = speed*1000/times_dif
-        angles = angles_cum[1:] - angles_cum[:-1]
         angles_cum_mid = (angles_cum[1:]+angles_cum[:-1])/2
 
         orientation = tf.linalg.l2_normalize(self.ort, axis = 0)
@@ -105,13 +104,12 @@ class RigidModelImu(tf.keras.layers.Layer):
         # acsl = transform(self.acs, orientation)
         # gyrl = transform(self.gyr, orientation)
         #gyrl = transform(self.gyr + self.gyro_bias*1e-6, orientation)
-        if rotate_gyro:
-            acsl = self.rotate_z(acsl,angles_cum_mid[:,2])
-            gyrl = self.rotate_z(gyrl,angles_cum_mid[:,2])
-            acsl = self.rotate_y(acsl,angles_cum_mid[:,1])
-            gyrl = self.rotate_y(gyrl,angles_cum_mid[:,1])
-            acsl = self.rotate_x(acsl,angles_cum_mid[:,0])
-            gyrl = self.rotate_x(gyrl,angles_cum_mid[:,0])
+        acsl = self.rotate_z(acsl,angles_cum_mid[:,2])
+        gyrl = self.rotate_z(gyrl,angles_cum_mid[:,2])
+        acsl = self.rotate_y(acsl,angles_cum_mid[:,1])
+        gyrl = self.rotate_y(gyrl,angles_cum_mid[:,1])
+        acsl = self.rotate_x(acsl,angles_cum_mid[:,0])
+        gyrl = self.rotate_x(gyrl,angles_cum_mid[:,0])
 
         acsi = acsl
 
@@ -119,24 +117,35 @@ class RigidModelImu(tf.keras.layers.Layer):
         acsi = acsi*self.g_scale  + self.down*self.g
         #acsi = self.callconv2(acsi,self.acs_windows)
         #acsr = self.callconv2(acsr,self.acs_windows)
-        acs_loss = tf.reduce_sum(tf.square(acsi - acsr)+tf.abs(acsi - acsr)/1000, axis = -1)*1e-1
+                    #+ tf.square(acsi[:,2])#*2/(1+my_norm(acsi))
+
         speed_loc = tf.cumsum(acsi, axis = 0)
         speed_loc = tf.concat([[[0,0,0]],speed_loc], axis = 0)
 
         acs_grad =  speed - speed_loc  
         acs_grad_average  = tf.reshape(tf.nn.avg_pool1d(tf.reshape(acs_grad,(1,-1,3)),16,1,'SAME'),(-1,3))
         acs_grad  = acs_grad - acs_grad_average
+        acs_loss = tf.reduce_sum(tf.square(acs_grad), axis = -1)*self.excluded_epoch
+        #acs_loss = tf.reduce_sum(tf.square(acsi - acsr)+tf.abs(acsi - acsr)/1000, axis = -1)
  
         right_dir = self.get_right(angles_cum)
         speed_grad = tf.reduce_sum(speed*right_dir, axis = -1)
         gyrl_long = tf.concat([[[0,0,0]],gyrl], axis=0)
-        speed_loss_denom = my_norm(gyrl_long)*100+1
+        speed_loss_denom = tf.stop_gradient(my_norm(gyrl_long)*100+1)
         speed_loss = tf.square(speed_grad/speed_loss_denom)
         speed_grad = tf.reshape(speed_grad/speed_loss_denom,(-1,1))*right_dir
-        speed_loss = (speed_loss[1:]+speed_loss[:-1])
 
 
-        quat_loss = tf.reduce_sum(tf.square(angles-gyrl), axis = -1)*100
+        no_speed_no_rotate = my_norm(tf.concat([[[0,0,0]],angles_cum[1:] - angles_cum[:-1]], axis = 0))/tf.stop_gradient(1e-3+my_norm(speed))
+        gyrl_cum = tf.cumsum(gyrl, axis = 0)
+        gyrl_cum = tf.concat([[[0,0,0]],gyrl_cum], axis = 0)
+        gyrl_grad =  angles_cum - gyrl_cum
+        gyrl_grad_average  = tf.reshape(tf.nn.avg_pool1d(tf.reshape(gyrl_grad,(1,-1,3)),16,1,'SAME'),(-1,3))
+        gyrl_grad = gyrl_grad - gyrl_grad_average
+        quat_loss = tf.reduce_sum(tf.square(gyrl_grad), axis = -1)*100*self.excluded_epoch + no_speed_no_rotate \
+            + (tf.square(angles_cum[:,0]) + tf.square(angles_cum[:,1]))*10
+
+        #quat_loss = tf.reduce_sum(tf.square(angles-gyrl), axis = -1)*100
         # quat_loss = tf.reduce_sum(tf.square(angles-gyrl)[:,2:], axis = -1)*1000\
         #     + tf.reduce_sum(tf.square(angles)[:,:2], axis = -1)*10
 
@@ -160,7 +169,7 @@ class RigidModelImu(tf.keras.layers.Layer):
         if use_yx:
             gyrl = self.rotate_y(gyrl,angles_cum_mid[:,1])
             gyrl = self.rotate_x(gyrl,angles_cum_mid[:,0])
-        return gyrl, angles
+        return gyrl*self.excluded_epoch[1:, tf.newaxis], angles*self.excluded_epoch[1:, tf.newaxis]
 
 
     def get_acses(self, inputs):
@@ -189,7 +198,7 @@ class RigidModelImu(tf.keras.layers.Layer):
         acsr = self.rotate_z(acsr,-angles_cum_mid[:,2])
         acst = self.rotate_z(acst,-angles_cum_mid[:,2])
 
-        return acsi, acst, acsr
+        return acsi*self.excluded_epoch[1:, tf.newaxis], acst*self.excluded_epoch[1:, tf.newaxis], acsr*self.excluded_epoch[1:, tf.newaxis]
 
     def compute_output_shape(self, _):
         return (1)

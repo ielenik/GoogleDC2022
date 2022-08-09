@@ -11,6 +11,7 @@ import datetime
 from src.utils.kml_writer import KMLWriter
 from pathlib import Path
 from scipy import ndimage, misc
+from os.path import exists
 
 from src.laika.lib.coordinates import ecef2geodetic, geodetic2ecef
 from src.laika.astro_dog import AstroDog
@@ -131,16 +132,26 @@ def sigmoid(z):
     return 1/(1 + np.exp(-z))
 
 
-def export_baseline(trip_id):
-    cur_measure = preload_gnss_log(f'{GOOGLE_DATA_ROOT}{trip_id}')
-    baselines            = cur_measure["baseline"]
-    with open(f'{GOOGLE_DATA_ROOT}{trip_id}'+'/baseline.pkl', 'wb') as f:
-        pickle.dump(baselines, f, pickle.HIGHEST_PROTOCOL)
-def export_times(trip_id):
-    cur_measure = preload_gnss_log(f'{GOOGLE_DATA_ROOT}{trip_id}')
-    times = cur_measure["utcTimeMillis"]
-    with open(f'{GOOGLE_DATA_ROOT}{trip_id}'+'/times.pkl', 'wb') as f:
-        pickle.dump(times, f, pickle.HIGHEST_PROTOCOL)
+def load_baseline(trip_id):
+    fname = f'{GOOGLE_DATA_ROOT}{trip_id}'+'/baseline0.pkl'
+    if not exists(fname):
+        cur_measure = preload_gnss_log(f'{GOOGLE_DATA_ROOT}{trip_id}')
+        baselines            = cur_measure["baseline"]
+        with open(fname, 'wb') as f:
+            pickle.dump(baselines, f, pickle.HIGHEST_PROTOCOL)
+    with open(fname, 'rb') as f:
+        return pickle.load(f)
+
+
+def load_times(trip_id):
+    fname = f'{GOOGLE_DATA_ROOT}{trip_id}'+'/times0.pkl'
+    if not exists(fname):
+        cur_measure = preload_gnss_log(f'{GOOGLE_DATA_ROOT}{trip_id}')
+        times = cur_measure["utcTimeMillis"]
+        with open(fname, 'wb') as f:
+            pickle.dump(times, f, pickle.HIGHEST_PROTOCOL)
+    with open(fname, 'rb') as f:
+        return pickle.load(f)
 
 def interp_nd(epochtimes, valtimes, valcum):
     dim = []
@@ -346,6 +357,9 @@ def calc_track_speed(trip_id):
     if 'Xiao' in trip_id:
         print("Configuring Xiaomi - reducing dopler weight")
         dopler_model = createXiaomiDoplerModel(sat_directions, -sat_deltaspeed, sat_deltaspeeduncert, sat_types)
+    elif 'Sams' in trip_id:
+        print("Configuring Samsung - increasing dopler weight")
+        dopler_model = createDoplerModel(sat_directions, -sat_deltaspeed, sat_deltaspeeduncert/10, sat_types)
     else:
         dopler_model = createDoplerModel(sat_directions, -sat_deltaspeed, sat_deltaspeeduncert, sat_types)
 
@@ -367,6 +381,9 @@ def calc_track_speed(trip_id):
     test2 = (test1 + sat_psevdo_shift)*sat_psevdoweights
     test = np.mean(np.abs(test2),axis = -1)
     times = tf.Variable(np.reshape(np.arange(0,len(sat_directions))*2/len(sat_directions)-1,(-1,1)),trainable=False,dtype=tf.float32)
+    if 'Sams' in trip_id:
+        print("Configuring Samsung - increasing psevdo weight")
+        sat_psevdoweights *= 10
     psevdo_model = createPsevdoModel(sat_directions, sat_psevdo_shift, sat_psevdoweights, sat_types)
 
 
@@ -388,6 +405,9 @@ def calc_track_speed(trip_id):
     sat_deltarange -= np.nanmedian(sat_deltarange, axis = -1, keepdims=True)
     sat_deltarange[sat_deltaweights == 0] = 0
 
+    if 'Sams' in trip_id:
+        print("Configuring Samsung - increasing delta weight")
+        sat_deltaweights *= 3
  
     baseline_stable = baseline_stable.reshape((-1,3))
     phase_model = createPhaseModel(sat_directions[1:],-sat_deltarange, sat_deltaweights)
@@ -403,7 +423,10 @@ def calc_track_speed(trip_id):
 
     #baselines = ndimage.median_filter(baselines,size=(5,1))
     speeds_init = (baselines[1:] - baselines[:-1])
-    #speeds_init = speeds_init_gt.copy()
+    trainspeed = True
+
+    trainspeed = False
+    speeds_init = speeds_init_gt.copy()
     speeds_init[:,2] = 0
     #speeds_init = ndimage.median_filter(speeds_init,size=(5,1))
     speeds = tf.Variable(speeds_init,trainable=True,dtype=tf.float32)
@@ -432,17 +455,14 @@ def calc_track_speed(trip_id):
     acsp, acsgt, acsr = imu_model.get_acses([speeds, gt_speed,orients,times_dif])
     acsp = acsp.numpy()
     acsp = ndimage.median_filter(acsp,size=(5,1))
-    len_frst = 0
-    while len_frst < 50 and acsp[len_frst,2] < -3:
-        len_frst += 1
+    # len_frst = 0
+    # while len_frst < 50 and acsp[len_frst,2] < -3:
+    #     len_frst += 1
 
-    print("First",len_frst," positions not used")
+    #print("First",len_frst," positions not used")
     # np_firstlast[:len_frst+10]  = 0
     # np_firstlast[-5:] = 0
-    firstlast_epoch = tf.Variable(np_firstlast,trainable=False,dtype=tf.float32)
-    baseline_error_scale = tf.Variable(1e-2,trainable=False,dtype=tf.float32)
-    accel_error_scale = tf.Variable(1.,trainable=False,dtype=tf.float32)
-    dopler_error_scale = tf.Variable(1.,trainable=False,dtype=tf.float32)
+    # firstlast_epoch = tf.Variable(np_firstlast,trainable=False,dtype=tf.float32)
     #@tf.autograph.experimental.do_not_convert
     def minimize_speederror(useimuloss, trainorient, trainspeed, rotate_gyro, optimizer):
         @tf.custom_gradient
@@ -465,6 +485,8 @@ def calc_track_speed(trip_id):
                 # speeds_loss_glob += tf.reduce_sum(tf.abs(acs[1:] - acs[:-1]), axis = -1)
 
                 speeds_loss_Z = tf.square(speeds[:,2])
+                speeds_sum_loss = tf.reduce_mean(norm(speeds))
+                speeds_z_grad = (speeds*[0,0,1])/tf.reshape(0.1+norm(speeds),(-1,1))
                 phase_loss = phase_model([speeds,orients])
                 dopler_loss = dopler_model([speeds,orients,times_dif])
                 acs_loss, acs_grad, quat_loss, speed_loss, speed_grad, g, stable_poses = imu_model([speeds,orients,times_dif,rotate_gyro])
@@ -476,13 +498,11 @@ def calc_track_speed(trip_id):
 
                 #psevdo_loss = psevdo_model([tf.concat([[[0.,0.,0.]],speeds], axis = 0), poses - baselines, times])
                 psevdo_loss, psevdo_grad = psevdo_model([tf.concat([[[0.,0.,0.]],fwd], axis = 0), poses - baseline_stable, times])
-                quat_loss = quat_loss*firstlast_epoch
-                speed_loss = speed_loss*firstlast_epoch
-                acs_loss = acs_loss*firstlast_epoch
+                # quat_loss = tf.concat([[0.],quat_loss*firstlast_epoch], axis = 0)
+                # speed_loss = tf.concat([[0.],speed_loss*firstlast_epoch], axis = 0)
+                # acs_loss = tf.concat([[0.],acs_loss*firstlast_epoch], axis = 0)
                 imu_loss = quat_loss + speed_loss + acs_loss
                 dir_loss = quat_loss + speed_loss
-                #*accel_error_scale
-                imu_loss = tf.concat([[0.],imu_loss], axis = 0)
                 if not useimuloss:
                     total_loss = phase_loss + dopler_loss + psevdo_loss*1e-6 + speeds_loss_glob/1000 + large_acs_loss
                 else:   
@@ -491,12 +511,15 @@ def calc_track_speed(trip_id):
                     #total_loss = imu_loss       + speeds_loss_Z    + phase_loss*10 + dopler_loss# + psevdo_loss*400 
                     #total_loss = psevdo_loss
                     # total_loss = imu_loss           + speeds_loss_Z*10 + psevdo_loss*10 + phase_loss + dopler_loss/10 
+                
+                total_loss = 100*(phase_loss/3  + dopler_loss/3 + psevdo_loss/10 + speed_loss + acs_loss + speeds_sum_loss/50)
+                total_mean_loss = tf.reduce_mean(total_loss)
                 # if not useimuloss:
                 # else:   
                 #     total_loss = imu_loss + phase_loss*10 + psevdo_loss*10 + dopler_loss + speeds_loss_Z*10
                 dopler_loss = dopler_loss + psevdo_loss/100# adjast bias?
                 phase_loss  = phase_loss  + psevdo_loss/100# adjast bias?
-                imu_loss = imu_loss/100
+                #imu_loss = imu_loss/100
                 # total_loss = tf.reduce_mean(total_loss)
                 # imu_loss = tf.reduce_mean(imu_loss)
                 # stable_poses = tf.concat([[0],stable_poses], axis=0)
@@ -521,6 +544,8 @@ def calc_track_speed(trip_id):
             gradients["physics"] = tape.gradient(speeds_loss_glob, [speeds])[0]
             #gradients["psevdo"] = psevdo_grad
             gradients["psevdo"] = tape.gradient(psevdo_loss, [speeds])[0]
+            gradients["speeds_sum"] = tape.gradient(speeds_sum_loss, [speeds])[0]
+            gradients["total"] = tape.gradient(total_mean_loss, [speeds])[0]
             #gradients["acs_grad"]   = norm_grad(gradients["acs_grad"]) 
             #gradients["speed_grad"] = norm_grad(gradients["speed_grad"])
             gradients["physics"] = norm_grad(gradients["physics"])
@@ -547,12 +572,16 @@ def calc_track_speed(trip_id):
             #psevdo_grad = psevdo_model.shift_pp[1:]-psevdo_model.shift_pp[:-1]
             #gradients['psevdo'] = psevdo_grad
 
-            optimizer.apply_gradients(zip([gradients["phase"] * 1e-4], [speeds]))   
-            optimizer.apply_gradients(zip([gradients["dopler"]* 1e-5], [speeds]))   
-            optimizer.apply_gradients(zip([gradients["physics"]* 1e-6], [speeds]))   
-            optimizer.apply_gradients(zip([gradients["psevdo"]* 1e-5], [speeds]))   
-            optimizer.apply_gradients(zip([gradients["speed_grad"]*1e-6], [speeds]))   
-            optimizer.apply_gradients(zip([gradients["acs_grad"]*1e-6], [speeds]))   
+            #optimizer.apply_gradients(zip([gradients["phase"] * 1e-4], [speeds]))   
+            #optimizer.apply_gradients(zip([gradients["dopler"]* 1e-5], [speeds]))   
+            # optimizer.apply_gradients(zip([gradients["psevdo"]* 1e-5], [speeds]))   
+            # optimizer.apply_gradients(zip([gradients["speed_grad"]*1e-6], [speeds]))   
+            # optimizer.apply_gradients(zip([gradients["acs_grad"]*3e-7], [speeds]))   
+            # optimizer.apply_gradients(zip([gradients["speeds_sum"]*2e-8], [speeds]))   
+            if trainspeed:
+                optimizer.apply_gradients(zip([gradients["total"]], [speeds]))   
+            
+            #optimizer.apply_gradients(zip([gradients["physics"]* 1e-6], [speeds]))   
             # if not useimuloss:
             #     optimizer.apply_gradients(zip([gradients["phase"] * 1e-4], [speeds]))   
             #     optimizer.apply_gradients(zip([gradients["dopler"]* 1e-5], [speeds]))   
@@ -597,17 +626,11 @@ def calc_track_speed(trip_id):
         return tf.reduce_mean(x).numpy()
     
 
-    trainspeed = True
     use_imu_loss = True
     if np.sum(utcTimeMillis[1:]-utcTimeMillis[:-1]>5000) > 0:
         use_imu_loss = False
-    if 'Samsu' in trip_id:
-        print("Configuring samsung")
-        accel_error_scale.assign(1e-2)
-        baseline_error_scale.assign(0)
-        dopler_error_scale.assign(100)
 
-    for step in range(0, 32):
+    for step in range(0, 64):
         # if step == -16:
         #     lr = 1e-3
         #     optimizer = tf.keras.optimizers.SGD(learning_rate=lr, momentum=0.9)
@@ -652,15 +675,15 @@ def calc_track_speed(trip_id):
             #optimizer = tf.keras.optimizers.SGD(learning_rate=lr, momentum=0.9)
             optimizer = tf.keras.optimizers.Adam(learning_rate=lr)#, epsilon= 0.0001)
             #optimizer = tf.keras.optimizers.SGD(learning_rate=lr)#, momentum=0.9)
-            train_step = tf.function(minimize_speederror).get_concrete_function(False, True, trainspeed, True, optimizer)
-        elif step == 2:
-            lr = 1e-3
-        elif step == 6:
-            lr = 1e-3
-        elif step == 12:
-            train_step = tf.function(minimize_speederror).get_concrete_function(True, True, trainspeed, True, optimizer)
-        elif step == 24:
-             lr = 1e-4
+            train_step = tf.function(tf.autograph.experimental.do_not_convert(minimize_speederror)).get_concrete_function(False, True, trainspeed, True, optimizer)
+        #elif step == 2:
+        #    lr = 1e-3
+        #elif step == 6:
+        #    lr = 1e-3
+        #elif step == 12:
+        #    train_step = tf.function(minimize_speederror).get_concrete_function(True, True, trainspeed, True, optimizer)
+        #elif step == 24:
+        #     lr = 1e-4
         # elif step == 4:
         #     lr = 1e-2
         # elif step == 6:
@@ -718,9 +741,9 @@ def calc_track_speed(trip_id):
             to_float(total_loss), 
             to_float(phase_loss), 
             to_float(dopler_loss), 
-            to_float(acs_loss), 
-            to_float(quat_loss), 
-            to_float(speed_loss), 
+            to_float(acs_loss)*10, 
+            to_float(quat_loss)*100, 
+            to_float(speed_loss)*100, 
             to_float(psevdo_loss), 
             to_float(g), 
             lr,
@@ -749,9 +772,9 @@ def calc_track_speed(trip_id):
 
             tr_quat, pred_quat = imu_model.get_angles([speeds, orients])
             pred_quat,tr_quat = pred_quat.numpy()*10, tr_quat.numpy()*10
-            gyr_scale = 1
-            if step > 8:
-                gyr_scale = 100
+            gyr_scale = 10
+            # if step > 8:
+            #     gyr_scale = 100
             plt.clf()
             plt.plot( np.arange(len(tr_quat)), tr_quat[:,0]*10)
             plt.plot( np.arange(len(tr_quat)), tr_quat[:,1]*10+6)
@@ -924,10 +947,8 @@ def calc_track_speed(trip_id):
             pa[np.linalg.norm(speeds_init_pred, axis=-1)<0.1] = NaN
             ga = quats_np[:,2]
 
-            ta = ta - ((ta-ga)/(2*PI)).astype(np.int32)*2*PI
-            ta = ta - ((ta-ga)/(PI)).astype(np.int32)*2*PI
-            pa = pa - ((pa-ga)/(2*PI)).astype(np.int32)*2*PI
-            pa = pa - ((pa-ga)/(PI)).astype(np.int32)*2*PI
+            ta = ta - np.round((ta-ga)/PI)*PI
+            pa = pa - np.round((pa-ga)/PI)*PI
 
             plt.plot( np.arange(len(pa)), pa)
             plt.plot( np.arange(len(ta)), ta)
