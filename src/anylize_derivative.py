@@ -452,19 +452,20 @@ def calc_track_speed(trip_id):
     speeds = tf.Variable(speeds_init,trainable=True,dtype=tf.float32)
     speeds_np = speeds_init
 
-    tr_quat, pred_quat = imu_model.get_angles(epoch_times)
-    pred_quat,tr_quat = pred_quat*10, tr_quat*10
+    tr_quat, pred_quat, dif_quat = imu_model.get_angles(epoch_times)
+    pred_quat,tr_quat, dif_quat = pred_quat*10, tr_quat*10, dif_quat*10
     gyr_scale = 10
     plt.clf()
     plt.plot( np.arange(len(tr_quat)), tr_quat[:,0]*10)
     plt.plot( np.arange(len(tr_quat)), tr_quat[:,1]*10+6)
-    plt.plot( np.arange(len(tr_quat)), tr_quat[:,2]*10+12)
+    plt.plot( np.arange(len(tr_quat)), tr_quat[:,2]+12)
     plt.plot( np.arange(len(pred_quat)), pred_quat[:,0]*10+3)
     plt.plot( np.arange(len(pred_quat)), pred_quat[:,1]*10+9)
-    plt.plot( np.arange(len(pred_quat)), pred_quat[:,2]*10+15)
-    plt.plot( np.arange(len(pred_quat)), gyr_scale*(pred_quat[:,0] - tr_quat[:,0]) + 18)
-    plt.plot( np.arange(len(pred_quat)), gyr_scale*(pred_quat[:,1] - tr_quat[:,1]) + 21)
-    plt.plot( np.arange(len(pred_quat)), gyr_scale*(pred_quat[:,2] - tr_quat[:,2]) + 24)
+    plt.plot( np.arange(len(pred_quat)), pred_quat[:,2]+15)
+    plt.plot( np.arange(len(dif_quat)), gyr_scale*dif_quat[:,0] + 18)
+    plt.plot( np.arange(len(dif_quat)), gyr_scale*dif_quat[:,1] + 21)
+    plt.plot( np.arange(len(dif_quat)), gyr_scale*dif_quat[:,2] + 24)
+    plt.legend(['tx','ty','tz','px', 'py', 'pz','dx','dy', 'dz'])
     plt.show()
 
 
@@ -533,7 +534,7 @@ def calc_track_speed(trip_id):
                 # quat_loss = tf.concat([[0.],quat_loss*firstlast_epoch], axis = 0)
                 # speed_loss = tf.concat([[0.],speed_loss*firstlast_epoch], axis = 0)
                 # acs_loss = tf.concat([[0.],acs_loss*firstlast_epoch], axis = 0)
-                imu_loss = quat_loss + speed_loss/10 + acs_loss/10
+                imu_loss = acs_loss + quat_loss/10 + speed_loss/10
                 dir_loss = quat_loss + acs_loss/10 + speed_loss/100
                 #total_loss = 100*(phase_loss/3  + dopler_loss/3 + psevdo_loss/10 + speed_loss + acs_loss*10 + quat_loss*10 + speeds_sum_loss/50)
                 total_loss = 1000*(psevdo_loss/100 + acs_loss + quat_loss + speed_loss/100 + speeds_sum_loss/1000)
@@ -768,6 +769,7 @@ def calc_track_speed(trip_id):
             speeds_e,
             )
             ,shift_median
+            ,imu_model.time_shift_acel.numpy()
             )#, end='\r')
         # print(imu_model.conv_filters_gyro.numpy().reshape((-1))/np.sum(imu_model.conv_filters_gyro.numpy()))
         # print(imu_model.conv_filters_acel.numpy().reshape((-1))/np.sum(imu_model.conv_filters_acel.numpy()))
@@ -785,11 +787,9 @@ def calc_track_speed(trip_id):
             # quat_loss = conv_numpy(quat_loss)
 
 
-            tr_quat, pred_quat = imu_model.get_angles(epoch_times)
-            pred_quat,tr_quat = pred_quat*10, tr_quat*10
+            tr_quat, pred_quat, dif_quat = imu_model.get_angles(epoch_times)
+            pred_quat,tr_quat, dif_quat = pred_quat*10, tr_quat*10, dif_quat*10
             gyr_scale = 10
-            # if step > 8:
-            #     gyr_scale = 100
             plt.clf()
             plt.plot( np.arange(len(tr_quat)), tr_quat[:,0]*10)
             plt.plot( np.arange(len(tr_quat)), tr_quat[:,1]*10+6)
@@ -797,9 +797,9 @@ def calc_track_speed(trip_id):
             plt.plot( np.arange(len(pred_quat)), pred_quat[:,0]*10+3)
             plt.plot( np.arange(len(pred_quat)), pred_quat[:,1]*10+9)
             plt.plot( np.arange(len(pred_quat)), pred_quat[:,2]+15)
-            plt.plot( np.arange(len(pred_quat)), gyr_scale*(pred_quat[:,0] - tr_quat[:,0]) + 18)
-            plt.plot( np.arange(len(pred_quat)), gyr_scale*(pred_quat[:,1] - tr_quat[:,1]) + 21)
-            plt.plot( np.arange(len(pred_quat)), gyr_scale*(pred_quat[:,2] - tr_quat[:,2]) + 24)
+            plt.plot( np.arange(len(pred_quat)), gyr_scale*dif_quat[:,0] + 18)
+            plt.plot( np.arange(len(pred_quat)), gyr_scale*dif_quat[:,1] + 21)
+            plt.plot( np.arange(len(pred_quat)), gyr_scale*dif_quat[:,2] + 24)
 
             plt.legend(['tx','ty','tz','px', 'py', 'pz','dx','dy', 'dz'])
             save_fig(image_path+'gyr\\gyro_'+str(step).zfill(3)+'.png')

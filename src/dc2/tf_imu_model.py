@@ -108,7 +108,7 @@ class RigidModelImu(tf.keras.layers.Layer):
         pred_gyr = self.angles[1:]-self.angles[:-1]
         gyrl_tr, gyrl_pr = self.get_local_gyr(pred_gyr)
         gyrl_dif = gyrl_pr-gyrl_tr
-        gyrl_dif_average  = tf.reshape(tf.nn.avg_pool1d(tf.reshape(gyrl_dif,(1,-1,3)),64*30,1,'SAME'),(-1,3))
+        gyrl_dif_average  = tf.reshape(tf.nn.avg_pool1d(tf.reshape(gyrl_dif,(1,-1,3)),5*60*30,1,'SAME'),(-1,3)) # five minutes
         gyrl_dif -= gyrl_dif_average
 
         quat_loss = tf.reduce_sum(tf.square(gyrl_dif*1000), axis = -1)# + 100*tf.reduce_mean(tf.square(self.gyro_bias[1:]-self.gyro_bias[:-1]))
@@ -125,24 +125,12 @@ class RigidModelImu(tf.keras.layers.Layer):
         return tf.reduce_mean(acs_loss), acs_grad, tf.reduce_mean(quat_loss), tf.reduce_mean(speed_loss), speed_grad, self.g_scale, None
 
     def get_angles(self, epoch_times):
-        speed_indexes_float = (epoch_times+self.time_shift_acel*1000)*self.fps/1000
-        speed_indexes_int = tf.cast(speed_indexes_float,tf.int32)
-        speed_indexes_rest = (speed_indexes_float - tf.cast(speed_indexes_int,tf.float32))[:,tf.newaxis]
-
-
         pred_gyr = self.angles[1:]-self.angles[:-1]
         gyrl_tr, gyrl_pr = self.get_local_gyr(pred_gyr)
-        orient_0_tr = tf.gather(gyrl_tr, speed_indexes_int, axis=0)
-        orient_1_tr = tf.gather(gyrl_tr, speed_indexes_int+1, axis=0)
-        # linear aproximation between two values shoud helps to find time shift
-        orient_tr = orient_0_tr * (1-speed_indexes_rest) + orient_1_tr * speed_indexes_rest
-
-        orient_0_pr = tf.gather(gyrl_pr, speed_indexes_int, axis=0)
-        orient_1_pr = tf.gather(gyrl_pr, speed_indexes_int+1, axis=0)
-        # linear aproximation between two values shoud helps to find time shift
-        orient_pr = orient_0_pr * (1-speed_indexes_rest) + orient_1_pr * speed_indexes_rest
-
-        return (orient_tr*self.fps).numpy(), (orient_pr*self.fps).numpy()
+        gyrl_dif = gyrl_pr-gyrl_tr
+        gyrl_dif_average  = tf.reshape(tf.nn.avg_pool1d(tf.reshape(gyrl_dif,(1,-1,3)),5*60*30,1,'SAME'),(-1,3)) # five minutes
+        gyrl_dif -= gyrl_dif_average
+        return (gyrl_tr*self.fps).numpy(), (gyrl_pr*self.fps).numpy(), (gyrl_dif*self.fps).numpy()
 
     def get_euler(self, epoch_times):
         speed_indexes_float = (epoch_times+self.time_shift_acel*1000)*self.fps/1000
