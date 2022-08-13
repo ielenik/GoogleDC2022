@@ -10,17 +10,14 @@ import matplotlib.pyplot as plt
 import datetime
 from src.utils.kml_writer import KMLWriter
 from pathlib import Path
+import imufusion
 
 from src.laika.lib.coordinates import ecef2geodetic, geodetic2ecef
 from src.laika.astro_dog import AstroDog
 from src.laika.gps_time import GPSTime
 from src.laika.downloader import download_cors_station
-from .tf.tf_numpy_tools import inv, transform, get_quat, mult
+from ..tf.tf_numpy_tools import inv, transform, get_quat, mult
 
-from .utils.loader import myLoadRinexIndexed, myLoadRinex
-from .utils.gnss_log_reader import gnss_log_to_dataframes
-from .utils.gnss_log_processor import process_gnss_log
-from .utils.coords_tools import calc_pos_fix, calc_speed
 from math import pi as PI
 
 GOOGLE_DATA_ROOT = r'D:\databases\smartphone-decimeter-2022'
@@ -279,6 +276,7 @@ def dif(sig):
     return sig[1:] - sig[:-1]
 
 def filter_outliers(baselines, angles, times):
+    angles = (angles[1:]+angles[:-1])/2
     baselines[:,2] = 0
     dirs = np.stack([-np.sin(angles), np.cos(angles), np.zeros_like(angles)],axis = 1)
     dirs_ort = np.stack([np.cos(angles), np.sin(angles), np.zeros_like(angles)],axis = 1)
@@ -293,7 +291,7 @@ def filter_outliers(baselines, angles, times):
         weights = np.abs(errors_dir1)+np.abs(errors_dir2)
         weights = weights[1:] + weights[:-1]
         weights += np.linalg.norm(acs, axis = -1, keepdims=True)/100
-        edge = 25
+        edge = 10
         while np.sum(weights>edge) < 3:
             edge -= 0.1
         weights[weights<edge] = 0
@@ -326,7 +324,7 @@ def filter_outliers(baselines, angles, times):
 
     return res
 
-def calc_initial_speed_guess(sat_deltashifts, sat_deltarangeweigths, sat_deltaspeed, sat_deltaspeedweights, sat_types, sat_dirs, gt_np, acses, acses_times, gyros, gyros_times, epoch_times, baselines):
+def calc_initial_speed_guess2(sat_deltashifts, sat_deltarangeweigths, sat_deltaspeed, sat_deltaspeedweights, sat_types, sat_dirs, gt_np, acses, acses_times, gyros, gyros_times, epoch_times, baselines):
     shifts = baselines[1:]-baselines[:-1]
     sh_gt = gt_np[1:]-gt_np[:-1]
     angles = np.arctan2(-shifts[:,0], shifts[:,1])
@@ -462,15 +460,6 @@ def calc_initial_speed_guess(sat_deltashifts, sat_deltarangeweigths, sat_deltasp
             shift = np.nanmedian(np.abs(((gyro - angles)/PI)))
         shift = np.nanmedian(np.abs(((gyro - angles)/PI)))
 
-        # nans, x= np.isnan(angles), lambda z: z.nonzero()[0]
-        # angles[nans]= np.interp(x(nans), x(~nans), angles[~nans])
-        # corr = signal.correlate(angles[1:]-angles[:-1], gyro[1:] - gyro[:-1], mode='same')
-        # start = np.argmax(corr)-len(gyro)//2
-        # gyro_short = gyroscum[start*factor::factor]
-        # gyro = gyro_short[:,1]
-        # gyro = gyro[:len(angles)]
-        # angles[nans] = NaN
-    # gyro = gyro+gfit[0]+gfit[1]*idx#+gfit[2]*idx**2+gfit[3]*idx**3+gfit[4]*idx**4
     # plt.clf()
     # plt.plot( np.arange(len(angles)), angles)
     # plt.plot( np.arange(len(gyro)), gyro)
@@ -749,3 +738,173 @@ def calc_initial_speed_guess(sat_deltashifts, sat_deltarangeweigths, sat_deltasp
 
 
     return shifts, gfit_cum
+
+def interp_nd(epochtimes, valtimes, valcum):
+    dim = []
+    for i in range(len(valcum[0])):
+        dim.append(np.interp(epochtimes, valtimes, valcum[:,i]))
+    return np.array(dim).T
+
+
+def get_quats(accelerometer, gyroscope, fps):
+    gyroscope = gyroscope*180/3.14
+    accelerometer = accelerometer/9.82
+
+    # Process sensor data
+    ahrs = imufusion.Ahrs()
+    euler = np.empty((len(accelerometer), 4))
+
+    for index in range(len(accelerometer)):
+        ahrs.update_no_magnetometer(gyroscope[index], accelerometer[index], 1 / fps)  # 100 Hz sample rate
+        euler[index] = ahrs.quaternion.array
+    return euler
+
+def mult2(a, b):
+    return np.stack([a[:,3] * b[:,0] + a[:,0] * b[:,3] + a[:,1] * b[:,2] - a[:,2] * b[:,1],  
+        a[:,3] * b[:,1] - a[:,0] * b[:,2] + a[:,1] * b[:,3] + a[:,2] * b[:,0],  
+        a[:,3] * b[:,2] + a[:,0] * b[:,1] - a[:,1] * b[:,0] + a[:,2] * b[:,3],
+        a[:,3] * b[:,3] - a[:,0] * b[:,0] - a[:,1] * b[:,1] - a[:,2] * b[:,2]], axis = 1)
+def FusionQuatReformat(quats):
+    w,x,y,z = np.moveaxis(quats, -1, 0) 
+    return np.stack([x,y,z,w], axis = -1)
+
+def FusionAhrsSetHeading(quats, heading):
+    x,y,z,w = np.moveaxis(quats, -1, 0) 
+    yaw = np.arctan2(w*z + x*y, 0.5 - y*y - z*z)
+    halfYawMinusHeading = 0.5 * (yaw - heading)
+    rotation = np.stack([np.zeros_like(w),np.zeros_like(w),-np.sin(halfYawMinusHeading),np.cos(halfYawMinusHeading)], axis = -1)
+    return mult2(rotation, quats)
+
+def FusionQuaternionToEuler(quats):
+    x,y,z,w = np.moveaxis(quats, -1, 0) 
+    halfMinusQySquared = 0.5 - y*y
+    roll  = np.arctan2(w*x + y*z, halfMinusQySquared - x*x)
+    pitch = np.arcsin(2.0 * (w * y - z * x))
+    yaw   = np.arctan2(w*z + x*y, halfMinusQySquared - z*z);
+    return np.stack([roll,pitch,yaw], axis = -1)
+
+def predict_angle(acses, gyros, times, epoch_times, baselines, gt_np, fps):
+    quats = get_quats(acses, gyros, fps)
+
+    shifts = baselines[1:]-baselines[:-1]
+    sh_gt = gt_np[1:]-gt_np[:-1]
+    angles = np.arctan2(-shifts[:,0], shifts[:,1])
+    angles[np.linalg.norm(shifts,axis=-1)<4] = NaN
+    angles_gt = np.arctan2(-sh_gt[:,0], sh_gt[:,1])
+    angles_gt[np.linalg.norm(sh_gt, axis = -1) < 1] = NaN
+
+    def resolve_shift(ang):
+        nans, x= np.isnan(ang), lambda z: z.nonzero()[0]
+        st = ang[0]
+        ang[nans]= 0#np.interp(x(nans), x(~nans), ang[~nans])
+        shifts = ang[1:] - ang[:-1]
+        shifts[shifts>PI] -= 2*PI
+        shifts[shifts<-PI] += 2*PI
+        if ~np.isnan(st):
+            shifts = np.concatenate([[st],shifts], axis = 0)
+        else:
+            shifts = np.concatenate([[0],shifts], axis = 0)
+        ang = np.cumsum(shifts)
+        ang[nans] = NaN
+        return ang
+
+    angles = resolve_shift(angles)
+    angles_gt = resolve_shift(angles_gt)
+
+    quats = FusionQuatReformat(quats)
+    quats = quats/np.linalg.norm(quats, axis = -1,keepdims=True)
+    euler = FusionQuaternionToEuler(quats)
+    for i in range(3):
+        euler[:,i] = resolve_shift(euler[:,i])
+
+    def get_gyro_err_fun(gyro, ang):
+        idx = np.arange(len(gyro))/2000
+        def gyro_err(x):
+            error = np.abs(gyro - ang + x[0] + x[1]*idx + x[2]*idx**2+ x[3]*idx**3)#+ x[4]*idx**4+ x[5]*idx**5+ x[6]*idx**6+ x[7]*idx**7)
+            error -= (error/(2*PI)).astype(np.int32)*2*PI
+            error -= (error/PI).astype(np.int32)*2*PI
+            error = np.nansum(np.abs(error))
+            return error**0.1
+        return gyro_err
+    def fit_gyro(gyro, ang):
+        minlen = min(len(gyro),len(ang))
+        gyro = gyro[:minlen]
+        ang  = ang[:minlen]
+        x0 = np.zeros((4))
+        x0 = opt.least_squares(get_gyro_err_fun(gyro,ang), x0).x
+        return opt.minimize(get_gyro_err_fun(gyro,ang), x0, method='nelder-mead',
+                 options={'xatol': 1e-8, 'disp': True}).x
+
+    initial_gyro_full = euler[:,2].copy()
+    gyro = np.interp((epoch_times[1:]+epoch_times[:-1])/2, times, euler[:,2])
+    initial_gyro_short = gyro.copy()
+
+    mean = np.nanmedian(gyro-angles_gt)
+    shift = (mean/(PI*2)).astype(np.int32)
+    gyro -= shift*2*PI
+    mean -= shift*2*PI
+    shift = (mean/PI).astype(np.int32)
+    gyro -= shift*2*PI
+    mean -= shift*2*PI
+
+    shift = ((gyro - angles)/(PI*2)).astype(np.int32)
+    angles += shift*2*PI
+    shift = ((gyro - angles)/PI).astype(np.int32)
+    angles += shift*2*PI
+    shift = np.nanmedian(np.abs(((gyro - angles)/PI)))
+    for i in range(3):
+        gfit = fit_gyro(gyro, angles)
+        idx = np.arange(len(gyro))/2000
+        gyro = gyro+gfit[0]+gfit[1]*idx+gfit[2]*idx**2+gfit[3]*idx**3#+gfit[4]*idx**4+gfit[5]*idx**5+gfit[6]*idx**6+gfit[7]*idx**7
+        mean = np.nanmedian(gyro-angles_gt)
+        shift = (mean/(PI*2)).astype(np.int32)
+        gyro -= shift*2*PI
+        mean -= shift*2*PI
+        shift = (mean/PI).astype(np.int32)
+        gyro -= shift*2*PI
+        mean -= shift*2*PI
+        
+        
+
+        shift = ((gyro - angles)/(PI*2)).astype(np.int32)
+        angles += shift*2*PI
+        shift = ((gyro - angles)/PI).astype(np.int32)
+        angles += shift*2*PI
+        shift = ((gyro - angles_gt)/(PI*2)).astype(np.int32)
+        angles_gt += shift*2*PI
+        shift = ((gyro - angles_gt)/PI).astype(np.int32)
+        angles_gt += shift*2*PI
+        
+        shift = np.nanmedian(np.abs(((gyro - angles)/PI)))
+        if abs(shift) > 0.6:
+            gyro += PI
+
+            mean = np.nanmedian(gyro-angles_gt)
+            shift = (mean/(PI*2)).astype(np.int32)
+            gyro -= shift*2*PI
+            mean -= shift*2*PI
+            shift = (mean/PI).astype(np.int32)
+            gyro -= shift*2*PI
+            mean -= shift*2*PI
+
+            shift = ((gyro - angles)/(PI*2)).astype(np.int32)
+            angles += shift*2*PI
+            shift = ((gyro - angles)/PI).astype(np.int32)
+            angles += shift*2*PI
+            shift = np.nanmedian(np.abs(((gyro - angles)/PI)))
+        shift = np.nanmedian(np.abs(((gyro - angles)/PI)))
+
+    gyro_shift = np.interp(times, (epoch_times[1:]+epoch_times[:-1])/2, gyro - initial_gyro_short)
+    quats = FusionAhrsSetHeading(quats, gyro_shift + initial_gyro_full)
+    euler = FusionQuaternionToEuler(quats)
+    for i in range(3):
+        euler[:,i] = resolve_shift(euler[:,i])
+
+    gyro_new = np.interp((epoch_times[1:]+epoch_times[:-1])/2, times, euler[:,2])
+    # plt.clf()
+    # plt.plot( np.arange(len(angles)), angles)
+    # plt.plot( np.arange(len(gyro_new)), gyro_new)
+    # plt.plot( np.arange(len(angles_gt)), angles_gt)
+    # plt.legend(['shift pred', 'gyroscop', 'real'])
+    # plt.show()
+    return euler

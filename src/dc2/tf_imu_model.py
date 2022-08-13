@@ -8,47 +8,33 @@ import math
 import random
 import matplotlib.pyplot as plt
 from ..utils.magnet_model import Magnetometer
+from ..utils.tensorflow_geometry import*
+from ..utils.predict_angle import predict_angle
 
 from tensorflow.python.framework import function
 from tensorflow.python.framework import function
 from .tf_numpy_tools import *
 
-
 class RigidModelImu(tf.keras.layers.Layer):
-    def __init__(self, acs, gyr, mat, **kwargs):
+    def __init__(self, acs, gyr, orientations, fps, **kwargs):
         super(RigidModelImu, self).__init__(**kwargs)
-        self.acs  = tf.Variable(acs, name = 'acs', trainable=False, dtype = tf.float32)
-        self.gyr  = tf.Variable(gyr, name = 'gyr', trainable=False, dtype = tf.float32)
+        self.fps  = tf.Variable(fps, name = 'fps', trainable=False, dtype = tf.float32)
+        self.acs  = tf.Variable(acs, name = 'acs', trainable=False, dtype = tf.float32)/self.fps
+        self.gyr  = tf.Variable(gyr, name = 'gyr', trainable=False, dtype = tf.float32)/self.fps
 
         self.down  = tf.Variable([[0.,0.,-1.]], trainable=False, dtype = tf.float32, name = 'down')
         self.fwd  = tf.Variable([[0.,1.,0.]], trainable=False, dtype = tf.float32, name = 'fwd')
-        self.right= tf.Variable([[1.,0.,0.]], trainable=False, dtype = tf.float32, name = 'fwd')
+        self.right= tf.Variable([[1.,0.,0.]], trainable=False, dtype = tf.float32, name = 'right')
         self.idquat = tf.Variable([[0.,0.,0.,1.]], trainable=False, dtype = tf.float32, name = 'idquat')
         self.north = self.fwd
 
+        self.angles  = tf.Variable(orientations, name = 'angles', trainable=True, dtype = tf.float32)
         self.g      = tf.Variable([[9.81]], name = 'g', trainable=False, dtype = tf.float32)
         self.g_scale      = tf.Variable([[1]], name = 'g_scale', trainable=True, dtype = tf.float32)
+        self.time_shift_acel      = tf.Variable(0, name = 'acel_timeshift', trainable=True, dtype = tf.float32)
 
-        #self.ort   = tf.Variable(np.ones((len(acs),4))*np.array([get_quat([0,1,0], [0,0,1])]), name = 'orientaiton', trainable=True, dtype = tf.float32)
-        self.ort    = tf.Variable(mat, name = 'orientaiton', trainable=True, dtype = tf.float32)
-        conv_init = np.zeros((8,1,1))
-        conv_init[3:5] = 1
-        # self.conv_filters_gyro  = tf.Variable(conv_init, name = 'conv_filters_gyro', trainable=True, dtype = tf.float32)
-        # self.conv_filters_acel  = tf.Variable(conv_init, name = 'conv_filters_acel', trainable=True, dtype = tf.float32)
-        #self.conv_filters  = tf.Variable(conv_init, name = 'conv_filters', trainable=True, dtype = tf.float32)
-        self.conv_filters_gyro  = tf.Variable(conv_init, name = 'conv_filters_gyro', trainable=True, dtype = tf.float32)
-        self.conv_filters_acel  = tf.Variable(conv_init, name = 'conv_filters_acel', trainable=True, dtype = tf.float32)
-        self.gyro_bias = tf.Variable([[0,0,0]], name = 'gyro_bias', trainable=False, dtype = tf.float32)
+        #self.gyro_bias = tf.Variable(np.zeros_like(gyr), name = 'gyro_bias', trainable=True, dtype = tf.float32)
         self.accel_bias = tf.Variable([[0,0,0]], name = 'accel_bias', trainable=True, dtype = tf.float32)
-        #self.gyro_scale = tf.Variable([[1,1,1]], name = 'gyro_scale', trainable=True, dtype = tf.float32)
-        self.acs_windows = tf.Variable(np.ones(16).reshape((16,1,1))/16, name = 'acs_mean_window', trainable=False, dtype = tf.float32)
-        
-        gyr = self.callconv_acel(self.gyr)
-        gyr = tf.linalg.norm(gyr*[5,0,5], axis = -1)
-        #gyr = self.callconv2(tf.abs(acs),self.acs_windows)
-        #acs = tf.reshape(acs, (-1,))
-        #self.acs_error_scale = tf.Variable(1/(1+acs*5), name = 'acs_error_scale', trainable=False, dtype = tf.float32)
-        self.excluded_epoch = tf.Variable(tf.concat([[0],tf.cast(gyr < 1.0,tf.float32)],axis=0), name = 'acs_error_scale', trainable=False, dtype = tf.float32)
 
     def build(self, input_shape):
         super(RigidModelImu, self).build(input_shape)
@@ -64,10 +50,9 @@ class RigidModelImu(tf.keras.layers.Layer):
         q = tf.stack([tf.math.cos(angle)*vec[:,0]+tf.math.sin(angle)*vec[:,2],tf.ones_like(angle)*vec[:,1], tf.math.cos(angle)*vec[:,2]-tf.math.sin(angle)*vec[:,0]], axis = 1)
         return q
     def get_fwd(self, omega):
-        #q = tf.stack([-tf.math.sin(omega[:,2]),tf.math.cos(omega[:,2]),tf.zeros_like(omega[:,2])], axis = 1)
         return self.rotate_z(self.fwd, omega[:,2])
     def get_right(self, omega):
-        #q = tf.stack([-tf.math.sin(omega[:,2]),tf.math.cos(omega[:,2]),tf.zeros_like(omega[:,2])], axis = 1)
+        self.right.assign(tf.linalg.l2_normalize(self.right))
         return self.rotate_z(self.right, omega[:,2])
     def get_up(self, omega):
         q = tf.stack([-tf.math.sin(omega[:,1]),-tf.math.cos(omega[:,1])*tf.math.sin(omega[:,0]),-tf.math.cos(omega[:,1])*tf.math.cos(omega[:,0])], axis = 1)
@@ -80,125 +65,121 @@ class RigidModelImu(tf.keras.layers.Layer):
         return tf.transpose(inputs)
 
 
-    def callconv_gyro(self, inputs):
-        conv_filters = self.conv_filters_gyro
-        conv_filters = conv_filters*2/tf.reduce_sum(conv_filters)
-        return self.callconv2(inputs,conv_filters,padding = 'VALID',scale=2)
-    def callconv_acel(self, inputs):
-        conv_filters = self.conv_filters_acel
-        conv_filters = conv_filters*2/tf.reduce_sum(conv_filters)
-        return self.callconv2(inputs,conv_filters,padding = 'VALID',scale=2) + self.accel_bias/1000
-        
+    def get_global_acs(self):
+        return tf.linalg.matvec(mat_from_euler(self.angles), self.acs+self.accel_bias)
+
+    def get_local_gyr(self, gyrpred):
+        return self.gyr, tf.linalg.matvec(rot_mat_from_euler((self.angles[1:]+self.angles[:-1])/2), gyrpred)
+
     def call(self, inputs):
-        speed, angles_cum, times_dif, rotate_gyro = inputs
-        speed = speed*1000/times_dif
-        angles_cum_mid = (angles_cum[1:]+angles_cum[:-1])/2
+        speed, epoch_times = inputs
+        speed = speed*1000/(epoch_times[1:] - epoch_times[:-1])[:,tf.newaxis]
 
-        orientation = tf.linalg.l2_normalize(self.ort, axis = 0)
-        
-        acs = self.callconv_acel(self.acs)
-        gyr = self.callconv_gyro(self.gyr+self.gyro_bias*1e-3)
-        acsl = tf.linalg.matmul(acs, orientation)
-        gyrl = tf.linalg.matmul(gyr, orientation)
-
-        # acsl = transform(self.acs, orientation)
-        # gyrl = transform(self.gyr, orientation)
-        #gyrl = transform(self.gyr + self.gyro_bias*1e-6, orientation)
-        acsl = self.rotate_z(acsl,angles_cum_mid[:,2])
-        gyrl = self.rotate_z(gyrl,angles_cum_mid[:,2])
-        acsl = self.rotate_y(acsl,angles_cum_mid[:,1])
-        gyrl = self.rotate_y(gyrl,angles_cum_mid[:,1])
-        acsl = self.rotate_x(acsl,angles_cum_mid[:,0])
-        gyrl = self.rotate_x(gyrl,angles_cum_mid[:,0])
-
-        acsi = acsl
-
-        acsr = speed[1:] - speed[:-1]
-        acsi = acsi*self.g_scale  + self.down*self.g
-        #acsi = self.callconv2(acsi,self.acs_windows)
-        #acsr = self.callconv2(acsr,self.acs_windows)
-                    #+ tf.square(acsi[:,2])#*2/(1+my_norm(acsi))
-
+        acsi = self.get_global_acs()
+        acsi = acsi*self.g_scale  + self.down*self.g/self.fps
         speed_loc = tf.cumsum(acsi, axis = 0)
-        speed_loc = tf.concat([[[0,0,0]],speed_loc], axis = 0)
 
-        acs_grad =  speed - speed_loc  
-        acs_grad_average  = tf.reshape(tf.nn.avg_pool1d(tf.reshape(acs_grad,(1,-1,3)),16,1,'SAME'),(-1,3))
+        epoch_times = (epoch_times[1:]+epoch_times[:-1])/2
+        speed_indexes_float = (epoch_times + self.time_shift_acel*1000)*self.fps/1000
+        speed_indexes_int = tf.cast(speed_indexes_float,tf.int32)
+        speed_indexes_rest = (speed_indexes_float - tf.cast(speed_indexes_int,tf.float32))[:,tf.newaxis]
+        speeds_0 = tf.gather(speed_loc, speed_indexes_int, axis=0)
+        speeds_1 = tf.gather(speed_loc, speed_indexes_int+1, axis=0)
+        # linear aproximation between two values shoud helps to find time shift
+        speeds_loc_short = speeds_0 * (1-speed_indexes_rest) + speeds_1 * speed_indexes_rest
+
+        acs_grad =  speed - speeds_loc_short
+        acs_grad_average  = tf.reshape(tf.nn.avg_pool1d(tf.reshape(acs_grad,(1,-1,3)),64,1,'SAME'),(-1,3))
         acs_grad  = acs_grad - acs_grad_average
-        acs_loss = tf.reduce_sum(tf.square(acs_grad), axis = -1)*self.excluded_epoch
+        acs_loss = tf.reduce_sum(tf.square(acs_grad), axis = -1) 
         #acs_loss = tf.reduce_sum(tf.square(acsi - acsr)+tf.abs(acsi - acsr)/1000, axis = -1)
  
-        right_dir = self.get_right(angles_cum)
+        orient_0 = tf.gather(self.angles, speed_indexes_int, axis=0)
+        orient_1 = tf.gather(self.angles, speed_indexes_int+1, axis=0)
+        # linear aproximation between two values shoud helps to find time shift
+        orient = orient_0 * (1-speed_indexes_rest) + orient_1 * speed_indexes_rest
+
+        right_dir = self.get_right(orient)
         speed_grad = tf.reduce_sum(speed*right_dir, axis = -1)
-        gyrl_long = tf.concat([[[0,0,0]],gyrl], axis=0)
-        speed_loss_denom = tf.stop_gradient(my_norm(gyrl_long)*100+1)
-        speed_loss = tf.square(speed_grad/speed_loss_denom)
-        speed_grad = tf.reshape(speed_grad/speed_loss_denom,(-1,1))*right_dir
+        speed_loss = tf.square(speed_grad)
+        speed_grad = tf.reshape(speed_grad,(-1,1))*right_dir
 
 
-        no_speed_no_rotate = my_norm(tf.concat([[[0,0,0]],angles_cum[1:] - angles_cum[:-1]], axis = 0))/tf.stop_gradient(1e-3+my_norm(speed))
-        gyrl_cum = tf.cumsum(gyrl, axis = 0)
-        gyrl_cum = tf.concat([[[0,0,0]],gyrl_cum], axis = 0)
-        gyrl_grad =  angles_cum - gyrl_cum
-        gyrl_grad_average  = tf.reshape(tf.nn.avg_pool1d(tf.reshape(gyrl_grad,(1,-1,3)),16,1,'SAME'),(-1,3))
-        gyrl_grad = gyrl_grad - gyrl_grad_average
-        quat_loss = tf.reduce_sum(tf.square(gyrl_grad), axis = -1)*100*self.excluded_epoch + no_speed_no_rotate \
-            + (tf.square(angles_cum[:,0]) + tf.square(angles_cum[:,1]))*10
+        pred_gyr = self.angles[1:]-self.angles[:-1]
+        gyrl_tr, gyrl_pr = self.get_local_gyr(pred_gyr)
+        gyrl_dif = gyrl_pr-gyrl_tr
+        gyrl_dif_average  = tf.reshape(tf.nn.avg_pool1d(tf.reshape(gyrl_dif,(1,-1,3)),64*30,1,'SAME'),(-1,3))
+        gyrl_dif -= gyrl_dif_average
 
-        #quat_loss = tf.reduce_sum(tf.square(angles-gyrl), axis = -1)*100
-        # quat_loss = tf.reduce_sum(tf.square(angles-gyrl)[:,2:], axis = -1)*1000\
-        #     + tf.reduce_sum(tf.square(angles)[:,:2], axis = -1)*10
+        quat_loss = tf.reduce_sum(tf.square(gyrl_dif*1000), axis = -1)# + 100*tf.reduce_mean(tf.square(self.gyro_bias[1:]-self.gyro_bias[:-1]))
 
-        gyr_stable = my_norm(gyr)
-        acs_stable = my_norm(acsi)
-        spd_stable = my_norm(speed[1:]+speed[:-1])
-        stable_poses = tf.logical_and(tf.logical_and(gyr_stable<1e-3,acs_stable<1e-2),spd_stable<1e-1)
-        stable_poses = tf.cast(stable_poses,tf.float32)
+        #quat_loss = quat_loss*1e-5 + tf.concat([[0],my_norm(angles_cum[1:] - angles_cum[:-1])], axis = 0)
+
+
+        # gyr_stable = my_norm(gyrl_tr)
+        # acs_stable = my_norm(acsi)
+        # spd_stable = my_norm(speed[1:]+speed[:-1])
+        # stable_poses = tf.logical_and(tf.logical_and(gyr_stable<1e-3,acs_stable<1e-2),spd_stable<1e-1)
+        # stable_poses = tf.cast(stable_poses,tf.float32)
         
-        return acs_loss, acs_grad, quat_loss, speed_loss, speed_grad, self.g_scale, stable_poses
+        return tf.reduce_mean(acs_loss), acs_grad, tf.reduce_mean(quat_loss), tf.reduce_mean(speed_loss), speed_grad, self.g_scale, None
 
-    def get_angles(self, inputs, use_yx = True):
-        speed, angles_cum = inputs
-        angles = angles_cum[1:] - angles_cum[:-1]
-        angles_cum_mid = (angles_cum[1:]+angles_cum[:-1])/2
-
-        orientation = tf.linalg.l2_normalize(self.ort, axis = 0)
-        gyr = self.callconv_gyro(self.gyr+self.gyro_bias*1e-3)
-        gyrl = tf.linalg.matmul(gyr, orientation)
-        gyrl = self.rotate_z(gyrl,angles_cum_mid[:,2])
-        if use_yx:
-            gyrl = self.rotate_y(gyrl,angles_cum_mid[:,1])
-            gyrl = self.rotate_x(gyrl,angles_cum_mid[:,0])
-        return gyrl*self.excluded_epoch[1:, tf.newaxis], angles*self.excluded_epoch[1:, tf.newaxis]
+    def get_angles(self, epoch_times):
+        speed_indexes_float = (epoch_times+self.time_shift_acel*1000)*self.fps/1000
+        speed_indexes_int = tf.cast(speed_indexes_float,tf.int32)
+        speed_indexes_rest = (speed_indexes_float - tf.cast(speed_indexes_int,tf.float32))[:,tf.newaxis]
 
 
-    def get_acses(self, inputs):
-        speed, speedgt,  angles_cum, times_dif = inputs
-        speed = speed*1000/times_dif
-        speedgt = speedgt*1000/times_dif
-        angles_cum_mid = (angles_cum[1:]+angles_cum[:-1])/2
+        pred_gyr = self.angles[1:]-self.angles[:-1]
+        gyrl_tr, gyrl_pr = self.get_local_gyr(pred_gyr)
+        orient_0_tr = tf.gather(gyrl_tr, speed_indexes_int, axis=0)
+        orient_1_tr = tf.gather(gyrl_tr, speed_indexes_int+1, axis=0)
+        # linear aproximation between two values shoud helps to find time shift
+        orient_tr = orient_0_tr * (1-speed_indexes_rest) + orient_1_tr * speed_indexes_rest
 
-        orientation = tf.linalg.l2_normalize(self.ort, axis = 0)
-        acs = self.callconv_acel(self.acs)
-        acsl = tf.linalg.matmul(acs, orientation)
-        acsl = self.rotate_z(acsl,angles_cum_mid[:,2])
-        acsl = self.rotate_y(acsl,angles_cum_mid[:,1])
-        acsl = self.rotate_x(acsl,angles_cum_mid[:,0])
+        orient_0_pr = tf.gather(gyrl_pr, speed_indexes_int, axis=0)
+        orient_1_pr = tf.gather(gyrl_pr, speed_indexes_int+1, axis=0)
+        # linear aproximation between two values shoud helps to find time shift
+        orient_pr = orient_0_pr * (1-speed_indexes_rest) + orient_1_pr * speed_indexes_rest
 
+        return (orient_tr*self.fps).numpy(), (orient_pr*self.fps).numpy()
+
+    def get_euler(self, epoch_times):
+        speed_indexes_float = (epoch_times+self.time_shift_acel*1000)*self.fps/1000
+        speed_indexes_int = tf.cast(speed_indexes_float,tf.int32)
+        speed_indexes_rest = (speed_indexes_float - tf.cast(speed_indexes_int,tf.float32))[:,tf.newaxis]
+
+
+        orient_0_pr = tf.gather(self.angles, speed_indexes_int, axis=0)
+        orient_1_pr = tf.gather(self.angles, speed_indexes_int+1, axis=0)
+        # linear aproximation between two values shoud helps to find time shift
+        orient_pr = orient_0_pr * (1-speed_indexes_rest) + orient_1_pr * speed_indexes_rest
+
+        return orient_pr.numpy()
+
+    def get_yaw(self, epoch_times):
+        return self.get_euler(epoch_times)[:,2]
+
+    def get_acses(self, speed, gt_speed, epoch_times):
+        speed    = speed   *1000/(epoch_times[1:] - epoch_times[:-1])[:,np.newaxis]
+        gt_speed = gt_speed*1000/(epoch_times[1:] - epoch_times[:-1])[:,np.newaxis]
+
+        acsi = self.get_global_acs() 
+        acsi = acsi*self.g_scale  + self.down*self.g/self.fps
+        speed_loc = tf.cumsum(acsi, axis = 0)
+        epoch_times = (epoch_times[1:] + epoch_times[:-1])/2
+        speed_indexes_float = (epoch_times + self.time_shift_acel*1000)*self.fps/1000
+        speed_indexes_int = tf.cast(speed_indexes_float,tf.int32)
+        speed_indexes_rest = (speed_indexes_float - tf.cast(speed_indexes_int,tf.float32))[:,tf.newaxis]
+        speeds_0 = tf.gather(speed_loc, speed_indexes_int, axis=0)
+        speeds_1 = tf.gather(speed_loc, speed_indexes_int+1, axis=0)
+        # linear aproximation between two values shoud helps to find time shift
+        speed_loc = speeds_0 * (1-speed_indexes_rest) + speeds_1 * speed_indexes_rest
+        acsi = speed_loc[1:] - speed_loc[:-1]
         acsr = speed[1:] - speed[:-1]
-        acst = speedgt[1:] - speedgt[:-1]
+        acst = gt_speed[1:] - gt_speed[:-1]
 
-        acsi = acsl*self.g_scale + self.down*self.g
-        #acsi = self.callconv2(acsi,self.acs_windows)
-        #acsr = self.callconv2(acsr,self.acs_windows)
-        #acst = self.callconv2(acst,self.acs_windows)
-
-
-        acsi = self.rotate_z(acsi,-angles_cum_mid[:,2])
-        acsr = self.rotate_z(acsr,-angles_cum_mid[:,2])
-        acst = self.rotate_z(acst,-angles_cum_mid[:,2])
-
-        return acsi*self.excluded_epoch[1:, tf.newaxis], acst*self.excluded_epoch[1:, tf.newaxis], acsr*self.excluded_epoch[1:, tf.newaxis]
+        return acsi.numpy(), acst.numpy(), acsr.numpy()
 
     def compute_output_shape(self, _):
         return (1)
@@ -211,48 +192,32 @@ def running_median_insort(seqin, window_size):
     """Contributed by Peter Otten"""
     return ndimage.median_filter(seqin,size=(window_size,1))
 
-def createRigidModel(epochtimes, acsvalues,acstimes,gyrvalues,gyrtimes):
+def createRigidModel(epochtimes, acsvalues,acstimes,gyrvalues,gyrtimes, baselines, gt_np):
 
-    nummesures = len(epochtimes)*10+10 # ten measrurment per epoch + 2 sec window for convolution
+    fps = 30
+    baseline_epochs = epochtimes.copy()
+    timedif = epochtimes[-1] - epochtimes[0] + 2
+    nummesures = int(timedif*fps/1000)
+
+    starttime = epochtimes[0] - 1000
+    epochtimes = np.arange(nummesures)/fps*1000+starttime
 
     gyrvalues -= np.median(gyrvalues, axis = 0)
-    epochtimesdif = (epochtimes[1:] - epochtimes[:-1])/2
-    epochtimesdif = np.tile(epochtimesdif,(2,1))
-    epochtimesdif = epochtimesdif.T.reshape(-1)
-    epochtimesnew = np.cumsum(epochtimesdif)
-    epochtimesnew = np.concatenate([[-1000,-500,0],
-                                    epochtimesnew,
-                                    np.array([500, 1000])+epochtimesnew[-1]
-                                    ])+epochtimes[0]
-
-
-    epochtimes = epochtimesnew
-
-    # gyrvalues[np.linalg.norm(gyrvalues,axis=-1) < 0.0001] = 0
-
-    gyrvalues = gyrvalues[1:]
-    gyrvalues = gyrvalues*(gyrtimes[1:]-gyrtimes[:-1]).reshape((-1,1))/1000
-    gyrtimes = gyrtimes[1:]
-
-    acsvalues = acsvalues[1:]
-    acsvalues = acsvalues*(acstimes[1:]-acstimes[:-1]).reshape((-1,1))/1000
-    acstimes = acstimes[1:]
-
-    gyrcum = np.cumsum(gyrvalues, axis=0)
-    acscum = np.cumsum(acsvalues, axis=0)
-
     def interp_nd(epochtimes, valtimes, valcum):
         dim = []
         for i in range(len(valcum[0])):
             dim.append(np.interp(epochtimes, valtimes, valcum[:,i]))
         return np.array(dim).T
 
-    gyr_epochs = interp_nd(epochtimes, gyrtimes, gyrcum)
-    acs_epochs = interp_nd(epochtimes, acstimes, acscum)
+    gyrvalues = np.cumsum((gyrvalues[1:]+gyrvalues[:-1])*(gyrtimes[1:] - gyrtimes[:-1])[:,np.newaxis]/2000, axis = 0)
+    gyr_epochs = interp_nd(epochtimes, (gyrtimes[1:] + gyrtimes[:-1])/2, gyrvalues)
+    gyr_epochs = (gyr_epochs[1:] - gyr_epochs[:-1])*fps
 
-    gyr_epochs = gyr_epochs[1:] - gyr_epochs[:-1]
-    acs_epochs = acs_epochs[1:] - acs_epochs[:-1]
-    acs_epochs[0:6] = acs_epochs[10]
+    acs_epochs = interp_nd(epochtimes, acstimes, acsvalues)
+    mat = np.array([[1.,0.,0],[0.,0.,-1.],[0.,1.,0]]) # just switch to more comfortable coord system
+    gyr_epochs = mat.dot(gyr_epochs.T).T
+    acs_epochs = mat.dot(acs_epochs.T).T
 
-    return RigidModelImu(acs_epochs, gyr_epochs, np.array([[1.,0.,0],[0.,0.,1.],[0.,-1.,0]]))
+    orientation = predict_angle(acs_epochs, np.concatenate([[gyr_epochs[0]],gyr_epochs], axis = 0),epochtimes,baseline_epochs,baselines, gt_np, fps)
+    return RigidModelImu(acs_epochs, gyr_epochs, orientation, fps)
     

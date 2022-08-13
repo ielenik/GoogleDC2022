@@ -56,10 +56,10 @@ def inv(a):
 def inv_np(a):
     return [-a[0], -a[1], -a[2], a[3]]
 
-def to_quat(omega, dt):
+def to_quat(omega, dt = 1):
     omegaMagnitude = np.linalg.norm(omega)
     if (omegaMagnitude < 0.00001):
-        omegaMagnitude = 1
+        omegaMagnitude = 0.00001
 
     thetaOverTwo = omegaMagnitude * dt / 2.0
     sinThetaOverTwo = math.sin(thetaOverTwo) / omegaMagnitude

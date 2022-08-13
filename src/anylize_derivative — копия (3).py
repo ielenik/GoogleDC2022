@@ -24,7 +24,7 @@ from .utils.gnss_log_reader import gnss_log_to_dataframes
 from .utils.gnss_log_processor import process_gnss_log
 from .utils.coords_tools import calc_pos_fix, calc_speed
 from math import pi as PI
-from .utils.predict_angle import filter_outliers
+from .predict_angle import calc_initial_speed_guess
 
 GOOGLE_DATA_ROOT = r'D:\databases\smartphone-decimeter-2022'
 
@@ -367,7 +367,7 @@ def calc_track_speed(trip_id):
     sat_scalar_velosities = np.sum(sat_velosities*sat_directions,axis=-1)
     sat_deltaspeed -= sat_scalar_velosities
 
-    imu_model = createRigidModel(utcTimeMillis,acsvalues,acstimes,gyrvalues,gyrtimes, baselines[:,0,:], gt_np)
+    imu_model = createRigidModel(utcTimeMillis,acsvalues,acstimes,gyrvalues,gyrtimes)
     if 'Xiao' in trip_id:
         print("Configuring Xiaomi - reducing dopler weight")
         dopler_model = createXiaomiDoplerModel(sat_directions, -sat_deltaspeed, sat_deltaspeeduncert, sat_types)
@@ -428,14 +428,9 @@ def calc_track_speed(trip_id):
     baseline_stable = baseline_stable.reshape((-1,3))
     phase_model = createPhaseModel(sat_directions[1:],-sat_deltarange, sat_deltaweights)
 
-    epoch_times = tf.Variable((utcTimeMillis - utcTimeMillis[0] + 1000).astype(np.float32),trainable=False,dtype=tf.float32)
+    baselines_flt, orinit = calc_initial_speed_guess(sat_deltarange,sat_deltaweights,-sat_deltaspeed, 1/sat_deltaspeeduncert, sat_types, sat_directions, gt_np,acsvalues,acstimes,gyrvalues,gyrtimes,utcTimeMillis,baseline_stable.copy())
     if trainspeed:
-        yaw = imu_model.get_yaw(epoch_times)
-        # plt.clf()
-        # plt.plot( np.arange(len(yaw)), yaw)
-        # plt.show()
-
-        baselines = filter_outliers(baseline_stable.copy(), yaw, utcTimeMillis)
+        baselines = baselines_flt
         speeds_init = (baselines[1:] - baselines[:-1])
         speeds_init[:,2] = 0
     else:
@@ -450,10 +445,23 @@ def calc_track_speed(trip_id):
 
     #speeds_init = ndimage.median_filter(speeds_init,size=(5,1))
     speeds = tf.Variable(speeds_init,trainable=True,dtype=tf.float32)
+    
     speeds_np = speeds_init
+    or_init = np.zeros((num_epochs-1,3))
+    ormed = np.median(orinit[:,2])
+    orinit[:,2] -= int((ormed/(2*PI)))*2*PI
+    ormed = np.median(orinit[:,2])
+    orinit[:,2] -= int((ormed/(PI)))*2*PI
 
-    tr_quat, pred_quat = imu_model.get_angles(epoch_times)
-    pred_quat,tr_quat = pred_quat*10, tr_quat*10
+    or_init = orinit
+    orients = tf.Variable(or_init,trainable=True,dtype=tf.float32)
+
+    tr_quat, pred_quat = imu_model.get_angles([speeds, orients])
+    pred_quat,tr_quat = pred_quat.numpy()*10, tr_quat.numpy()*10
+    gyr_scale = 10
+    #imu_model.gyro_bias.assign((pred_quat-tr_quat)*100)
+    tr_quat, pred_quat = imu_model.get_angles([speeds, orients])
+    pred_quat,tr_quat = pred_quat.numpy()*10, tr_quat.numpy()*10
     gyr_scale = 10
     plt.clf()
     plt.plot( np.arange(len(tr_quat)), tr_quat[:,0]*10)
@@ -465,6 +473,8 @@ def calc_track_speed(trip_id):
     plt.plot( np.arange(len(pred_quat)), gyr_scale*(pred_quat[:,0] - tr_quat[:,0]) + 18)
     plt.plot( np.arange(len(pred_quat)), gyr_scale*(pred_quat[:,1] - tr_quat[:,1]) + 21)
     plt.plot( np.arange(len(pred_quat)), gyr_scale*(pred_quat[:,2] - tr_quat[:,2]) + 24)
+    gyro_bias = imu_model.gyro_bias.numpy()
+    plt.plot( np.arange(len(gyro_bias)), gyro_bias - [2,4,6])
     plt.show()
 
 
@@ -477,26 +487,23 @@ def calc_track_speed(trip_id):
     pos_error = np.sort(pos_error)
     pos_error_abs = (pos_error[len(pos_error)//2] + pos_error[len(pos_error)*95//100])/2
     print("Baseline error:", pos_error_abs)
-    acsp, acsgt, acsr = imu_model.get_acses(speeds, gt_speed,epoch_times)
-    # plt.clf()
-    # plt.ylim([-2,24])
-    # plt.plot( np.arange(len(acsp)), acsp[:,0])
-    # plt.plot( np.arange(len(acsp)), acsp[:,1]+6)
-    # plt.plot( np.arange(len(acsp)), acsp[:,2]+12)
-    # plt.plot( np.arange(len(acsr)), acsr[:,0]+2)
-    # plt.plot( np.arange(len(acsr)), acsr[:,1]+8)
-    # plt.plot( np.arange(len(acsr)), acsr[:,2]+14)
-    # plt.plot( np.arange(len(acsgt)), acsgt[:,0]+4)
-    # plt.plot( np.arange(len(acsgt)), acsgt[:,1]+10)
-    # plt.plot( np.arange(len(acsgt)), acsgt[:,2]+16)
-    # plt.plot( np.arange(len(acsr)), acsr[:,0]-acsp[:,0]+18)
-    # plt.plot( np.arange(len(acsr)), acsr[:,1]-acsp[:,1]+20)
-    # plt.plot( np.arange(len(acsr)), acsr[:,2]-acsp[:,2]+22)
+    times_dif = tf.cast(tf.reshape(utcTimeMillis[1:]-utcTimeMillis[:-1],(-1,1)), tf.float32)
+    
+    
+    
+    np_firstlast = np.ones(len(times_dif)-1)
+    acsp, acsgt, acsr = imu_model.get_acses([speeds, gt_speed,orients,times_dif])
+    acsp = acsp.numpy()
+    acsp = ndimage.median_filter(acsp,size=(5,1))
+    # len_frst = 0
+    # while len_frst < 50 and acsp[len_frst,2] < -3:
+    #     len_frst += 1
 
-    # plt.legend(['px', 'py', 'pz','tx','ty','tz','gtx','gty','gtz','dx','dy', 'dz'])
-    # plt.show()
-
-
+    #print("First",len_frst," positions not used")
+    # np_firstlast[:len_frst+10]  = 0
+    # np_firstlast[-5:] = 0
+    # firstlast_epoch = tf.Variable(np_firstlast,trainable=False,dtype=tf.float32)
+    #@tf.autograph.experimental.do_not_convert
     def minimize_speederror(useimuloss, trainorient, trainspeed, rotate_gyro, optimizer):
         @tf.custom_gradient
         def norm(x):
@@ -505,15 +512,11 @@ def calc_track_speed(trip_id):
                 return tf.expand_dims(dy,-1) * (x / (tf.expand_dims(y + 1e-19,-1)))
 
             return y, grad
-        def diff(x):
-            return x[1:] - x[:-1]
-        def diffna(x):
-            return (x[1:] - x[:-1])[:,tf.newaxis]
         for _ in range(4):
             with tf.GradientTape(persistent=True) as tape:
                 #speeds_loss_glob = tf.abs(norm(speeds[1:])-norm(speeds[:-1]))
                 # speeds_loss_glob += (norm(speeds[1:])*norm(speeds[:-1]) - tf.reduce_sum(speeds[1:]*speeds[:-1], axis = -1))/10
-                sp = norm(speeds*1000./diffna(epoch_times))
+                sp = norm(speeds*1000./times_dif)
                 acs = sp[1:]-sp[:-1]
                 acs = tf.concat([acs,[0.]], axis = 0)
                 speeds_loss_glob = tf.square(acs)#norm(acs)*10+
@@ -524,19 +527,33 @@ def calc_track_speed(trip_id):
                 speeds_loss_Z = tf.square(speeds[:,2])
                 speeds_sum_loss = tf.reduce_mean(norm(speeds))
                 speeds_z_grad = (speeds*[0,0,1])/tf.reshape(0.1+norm(speeds),(-1,1))
-                phase_loss = phase_model(speeds)
-                dopler_loss = dopler_model([speeds,diffna(epoch_times)])
-                acs_loss, acs_grad, quat_loss, speed_loss, speed_grad, g, stable_poses = imu_model([speeds,epoch_times])
+                phase_loss = phase_model([speeds,orients])
+                dopler_loss = dopler_model([speeds,orients,times_dif])
+                acs_loss, acs_grad, quat_loss, speed_loss, speed_grad, g, stable_poses = imu_model([speeds,orients,times_dif,rotate_gyro])
                 poses = tf.cumsum(speeds, axis = 0)
                 poses = tf.concat([[[0.,0.,0.]],poses], axis = 0)
-                psevdo_loss, psevdo_grad = psevdo_model(poses - baseline_stable)
+
+                fwd = tf.stack([tf.math.cos(orients[:,2]),tf.math.sin(orients[:,2]),tf.zeros_like(orients[:,2])], axis = 1)
+
+
+                #psevdo_loss = psevdo_model([tf.concat([[[0.,0.,0.]],speeds], axis = 0), poses - baselines, times])
+                psevdo_loss, psevdo_grad = psevdo_model([tf.concat([[[0.,0.,0.]],fwd], axis = 0), poses - baseline_stable, times])
                 # quat_loss = tf.concat([[0.],quat_loss*firstlast_epoch], axis = 0)
                 # speed_loss = tf.concat([[0.],speed_loss*firstlast_epoch], axis = 0)
                 # acs_loss = tf.concat([[0.],acs_loss*firstlast_epoch], axis = 0)
-                imu_loss = quat_loss + speed_loss/10 + acs_loss/10
-                dir_loss = quat_loss + acs_loss/10 + speed_loss/100
-                #total_loss = 100*(phase_loss/3  + dopler_loss/3 + psevdo_loss/10 + speed_loss + acs_loss*10 + quat_loss*10 + speeds_sum_loss/50)
-                total_loss = 1000*(psevdo_loss/100 + acs_loss + quat_loss + speed_loss/100 + speeds_sum_loss/1000)
+                imu_loss = quat_loss + speed_loss + acs_loss
+                dir_loss = quat_loss + acs_loss + speed_loss/100
+                if not useimuloss:
+                    total_loss = phase_loss + dopler_loss + psevdo_loss*1e-6 + speeds_loss_glob/1000 + large_acs_loss
+                else:   
+                    #total_loss = phase_loss + dopler_loss*dopler_error_scale/100 + psevdo_loss + imu_loss 
+                    total_loss = imu_loss + psevdo_loss*1e-6 + phase_loss + dopler_loss + large_acs_loss + speeds_loss_Z/100
+                    #total_loss = imu_loss       + speeds_loss_Z    + phase_loss*10 + dopler_loss# + psevdo_loss*400 
+                    #total_loss = psevdo_loss
+                    # total_loss = imu_loss           + speeds_loss_Z*10 + psevdo_loss*10 + phase_loss + dopler_loss/10 
+                
+                #total_loss = 100*(phase_loss/3  + dopler_loss/3 + psevdo_loss/10 + speed_loss + acs_loss + speeds_sum_loss/50)
+                total_loss = 1000*(psevdo_loss/100 + acs_loss + quat_loss + speed_loss/100 + speeds_sum_loss/100 + speeds_loss_glob/100)
                 total_mean_loss = tf.reduce_mean(total_loss)
                 # if not useimuloss:
                 # else:   
@@ -629,6 +646,10 @@ def calc_track_speed(trip_id):
             # stable_poses = tf.concat([[0],stable_poses], axis=0)
             # speeds.assign(speeds*(1-tf.reshape(stable_poses,(-1,1))))      
             
+            if trainorient:
+                grads = tape.gradient(dir_loss, [orients])
+                optimizer.apply_gradients(zip(grads, [orients]))        
+
             grads = tape.gradient(phase_loss, phase_model.trainable_weights)
             optimizer.apply_gradients(zip(grads, phase_model.trainable_weights))        
             grads = tape.gradient(dopler_loss, dopler_model.trainable_weights)
@@ -639,7 +660,7 @@ def calc_track_speed(trip_id):
             del tape
 
 
-        return  total_loss, phase_loss, dopler_loss, acs_loss, quat_loss, speed_loss, psevdo_loss, speeds_loss_Z, g, psevdo_model.get_poses(poses), stable_poses, gradients
+        return  total_loss, phase_loss, dopler_loss, acs_loss, quat_loss, speed_loss, psevdo_loss, speeds_loss_Z, g, psevdo_model.get_poses([tf.concat([[fwd[0]],fwd],axis=0),poses, times]), stable_poses, gradients
 
 
     def to_float(x):
@@ -746,6 +767,8 @@ def calc_track_speed(trip_id):
         pos_error = np.linalg.norm((true_pos-pred_pos)[:,:2],axis=-1)
         pos_error = np.sort(pos_error)
         pos_error_abs2 = (pos_error[len(pos_error)//2] + pos_error[len(pos_error)*95//100])/2
+        pos_error50 = pos_error[len(pos_error)//2]
+        pos_error95 = pos_error[len(pos_error)*95//100]
 
         shift_median = np.median(true_pos-pred_pos, axis = 0)
         pred_pos2 = pred_pos + shift_median
@@ -753,7 +776,7 @@ def calc_track_speed(trip_id):
         pos_error = np.sort(pos_error)
         pos_error_abs = (pos_error[len(pos_error)//2] + pos_error[len(pos_error)*95//100])/2
 
-        print( "Training loss at step %d: %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f  lr %.4f er %.4f(%.4f) ser %.4f" % (step, 
+        print( "Training loss at step %d: %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f  lr %.4f er %.4f(%.4f)(%.4f/%.4f) ser %.4f" % (step, 
             to_float(total_loss), 
             to_float(phase_loss), 
             to_float(dopler_loss), 
@@ -765,8 +788,11 @@ def calc_track_speed(trip_id):
             lr,
             pos_error_abs,
             pos_error_abs2,
+            pos_error50,
+            pos_error95,
             speeds_e,
             )
+            ,tf.reduce_sum(stable_poses).numpy()
             ,shift_median
             )#, end='\r')
         # print(imu_model.conv_filters_gyro.numpy().reshape((-1))/np.sum(imu_model.conv_filters_gyro.numpy()))
@@ -785,8 +811,8 @@ def calc_track_speed(trip_id):
             # quat_loss = conv_numpy(quat_loss)
 
 
-            tr_quat, pred_quat = imu_model.get_angles(epoch_times)
-            pred_quat,tr_quat = pred_quat*10, tr_quat*10
+            tr_quat, pred_quat = imu_model.get_angles([speeds, orients])
+            pred_quat,tr_quat = pred_quat.numpy()*10, tr_quat.numpy()*10
             gyr_scale = 10
             # if step > 8:
             #     gyr_scale = 100
@@ -800,6 +826,8 @@ def calc_track_speed(trip_id):
             plt.plot( np.arange(len(pred_quat)), gyr_scale*(pred_quat[:,0] - tr_quat[:,0]) + 18)
             plt.plot( np.arange(len(pred_quat)), gyr_scale*(pred_quat[:,1] - tr_quat[:,1]) + 21)
             plt.plot( np.arange(len(pred_quat)), gyr_scale*(pred_quat[:,2] - tr_quat[:,2]) + 24)
+            gyro_bias = imu_model.gyro_bias.numpy()
+            plt.plot( np.arange(len(gyro_bias)), gyro_bias - [2,4,6])
 
             plt.legend(['tx','ty','tz','px', 'py', 'pz','dx','dy', 'dz'])
             save_fig(image_path+'gyr\\gyro_'+str(step).zfill(3)+'.png')
@@ -809,7 +837,8 @@ def calc_track_speed(trip_id):
             # plt.plot( np.arange(len(speeds_init_gt)), speeds_init_pred[:,1] - speeds_init_gt[:,1])
             timedif = utcTimeMillis[1:]-utcTimeMillis[:-1]
 
-            ga = imu_model.get_yaw(epoch_times)
+            quats_np  = orients.numpy()
+            ga = -quats_np[:,2]
             ga = (ga[1:]+ga[:-1])/2
 
             def rotate(v, ang):
@@ -825,7 +854,8 @@ def calc_track_speed(trip_id):
                     res.append(rotate(v,ang))
                 return res
             # speed_loss = conv_numpy(speed_loss)
-            acsp, acsgt, acsr = imu_model.get_acses(speeds, gt_speed,epoch_times)
+            acsp, acsgt, acsr = imu_model.get_acses([speeds, gt_speed,orients,times_dif])
+            acsp, acsgt, acsr = acsp.numpy(), acsgt.numpy(), acsr.numpy()
             acsp_rot, acsgt_rot, acsr_rot = rotate_all([acsp, acsgt, acsr], ga)
 
             plt.clf()
@@ -845,7 +875,7 @@ def calc_track_speed(trip_id):
 
             plt.legend(['px', 'py', 'pz','tx','ty','tz','gtx','gty','gtz','dx','dy', 'dz'])
             save_fig(image_path+'acc\\accel_'+str(step).zfill(3)+'.png')
-            ga = -imu_model.get_yaw(epoch_times)
+            ga = -quats_np[:,2]
 
             speeds_init_gt_rot, speeds_init_pred_rot = rotate_all([speeds_init_gt, speeds_init_pred], ga)
 
@@ -926,40 +956,39 @@ def calc_track_speed(trip_id):
             speeds_np1 = gt_np[1:]-gt_np[:-1]
             speeds_np1 = speeds_np1/(np.linalg.norm(speeds_np1, axis=-1,keepdims=True) + 0.5)
             
-            euler = imu_model.get_euler(epoch_times)
+            
             plt.clf()
-            plt.plot( np.arange(len(speeds_np)), speeds_np[:,0])
-            plt.plot( np.arange(len(speeds_np)), speeds_np[:,1])
+            plt.plot( np.arange(len(quats_np)), speeds_np[:,0])
+            plt.plot( np.arange(len(quats_np)), speeds_np[:,1])
             plt.plot( np.arange(len(speeds_np1)), speeds_np1[:,0])
             plt.plot( np.arange(len(speeds_np1)), speeds_np1[:,1])
-            plt.plot( np.arange(len(euler)), euler[:,0]*10)
-            plt.plot( np.arange(len(euler)), euler[:,1]*10)
-            plt.plot( np.arange(len(euler)), euler[:,2]/PI)
+            plt.plot( np.arange(len(quats_np)), quats_np[:,0]*10)
+            plt.plot( np.arange(len(quats_np)), quats_np[:,1]*10)
+            plt.plot( np.arange(len(quats_np)), quats_np[:,2]/PI)
             plt.legend(['bx', 'by','tx', 'ty','q x', 'q y','q z'])
             save_fig(image_path+'qtr\\quat'+str(step).zfill(3)+'.png')
-            # plt.clf()
-            # def plotloss(l):
-            #     if not isinstance(l,(list,np.ndarray)):
-            #         l = l.numpy()
-            #     plt.plot( np.arange(len(l)), l)
-            # plotloss(total_loss)
-            # plotloss(phase_loss)
-            # plotloss(dopler_loss)
-            # plotloss(acs_loss*100)
-            # plotloss(quat_loss*100)
-            # plotloss(speed_loss*100)
-            # plotloss(psevdo_loss)
-            # #plotloss(speeds_loss_Z)
-            # plt.legend(['total', 'phase','dopler', 'acs','quat', 'speed','psevdo'])
-            # save_fig(image_path+'lss\\loss'+str(step).zfill(3)+'.png')
+            plt.clf()
+            def plotloss(l):
+                if not isinstance(l,(list,np.ndarray)):
+                    l = l.numpy()
+                plt.plot( np.arange(len(l)), l)
+            plotloss(total_loss)
+            plotloss(phase_loss)
+            plotloss(dopler_loss)
+            plotloss(acs_loss*100)
+            plotloss(quat_loss*100)
+            plotloss(speed_loss*100)
+            plotloss(psevdo_loss)
+            #plotloss(speeds_loss_Z)
+            plt.legend(['total', 'phase','dopler', 'acs','quat', 'speed','psevdo'])
+            save_fig(image_path+'lss\\loss'+str(step).zfill(3)+'.png')
 
             plt.clf()
             ta = np.arctan2(-speeds_init_gt[:,0], speeds_init_gt[:,1])
             pa = np.arctan2(-speeds_init_pred[:,0], speeds_init_pred[:,1])
             ta[np.linalg.norm(speeds_init_gt, axis=-1)<0.1] = NaN
             pa[np.linalg.norm(speeds_init_pred, axis=-1)<0.1] = NaN
-            ga = imu_model.get_yaw(epoch_times)
-            ga = (ga[1:]+ga[:-1])/2
+            ga = quats_np[:,2]
 
             ta = ta - np.round((ta-ga)/PI)*PI
             pa = pa - np.round((pa-ga)/PI)*PI
@@ -990,6 +1019,7 @@ def calc_track_speed(trip_id):
             kml.addTrack('baseline','FF0000FF', wgs_poses)
             kml.finish()
 
+    baseline_error_scale.assign(10.)
     wgs_poses = ecef2geodetic(local_transform_inv(poses))
     
     fname = f'{GOOGLE_DATA_ROOT}{trip_id}'+'/result0.pkl'

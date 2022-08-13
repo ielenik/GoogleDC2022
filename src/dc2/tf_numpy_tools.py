@@ -45,27 +45,37 @@ def mult_np(a, b):
         a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]])
 
 def mult(a, b):
-    return tf.stack([a[:,3] * b[:,0] + a[:,0] * b[:,3] + a[:,1] * b[:,2] - a[:,2] * b[:,1],  
-        a[:,3] * b[:,1] - a[:,0] * b[:,2] + a[:,1] * b[:,3] + a[:,2] * b[:,0],  
-        a[:,3] * b[:,2] + a[:,0] * b[:,1] - a[:,1] * b[:,0] + a[:,2] * b[:,3],
-        a[:,3] * b[:,3] - a[:,0] * b[:,0] - a[:,1] * b[:,1] - a[:,2] * b[:,2]], axis = 1)
+    a0,a1,a2,a3 = tf.unstack(a, axis=-1)
+    b0,b1,b2,b3 = tf.unstack(b, axis=-1)
+    return tf.stack([a3 * b0 + a0 * b3 + a1 * b2 - a2 * b1,  
+        a3 * b1 - a0 * b2 + a1 * b3 + a2 * b0,  
+        a3 * b2 + a0 * b1 - a1 * b0 + a2 * b3,
+        a3 * b3 - a0 * b0 - a1 * b1 - a2 * b2], axis = 1)
 
 def inv(a):
-    return tf.stack([-a[:,0], -a[:,1], -a[:,2], a[:,3]], axis = 1)
+    return a * [-1,-1,-1,1]
 
 def inv_np(a):
-    return [-a[0], -a[1], -a[2], a[3]]
+    return a * [-1,-1,-1,1]
 
-def to_quat(omega, dt):
+def to_quat(omega, dt = 1):
     omegaMagnitude = np.linalg.norm(omega)
     if (omegaMagnitude < 0.00001):
-        omegaMagnitude = 1
+        omegaMagnitude = 0.00001
 
     thetaOverTwo = omegaMagnitude * dt / 2.0
     sinThetaOverTwo = math.sin(thetaOverTwo) / omegaMagnitude
     cosThetaOverTwo = math.cos(thetaOverTwo) 
 
     return np.array([sinThetaOverTwo * omega[0], sinThetaOverTwo * omega[1], sinThetaOverTwo * omega[2], cosThetaOverTwo])
+def tf_to_quat(omega, dt = 1):
+    omegaMagnitude = tf.maximum(tf.linalg.norm(omega, axis = -1),1e-5)
+    thetaOverTwo = omegaMagnitude * dt / 2.0
+    sinThetaOverTwo = tf.sin(thetaOverTwo) / omegaMagnitude
+    cosThetaOverTwo = tf.cos(thetaOverTwo) 
+
+    o0,o1,o2 = tf.unstack(omega,axis=-1)
+    return tf.stack([sinThetaOverTwo * o0, sinThetaOverTwo * o1, sinThetaOverTwo * o2, cosThetaOverTwo], axis = -1)
 def get_quat(v1,v2):
     v1 = v1/np.linalg.norm(v1)
     v2 = v2/np.linalg.norm(v2)
@@ -78,18 +88,19 @@ def get_quat(v1,v2):
     return res
 
 def transform(value, rotation):
-    num12 = rotation[:,0] + rotation[:,0]
-    num2 = rotation[:,1] + rotation[:,1]
-    num = rotation[:,2] + rotation[:,2]
-    num11 = rotation[:,3] * num12
-    num10 = rotation[:,3] * num2
-    num9 = rotation[:,3] * num
-    num8 = rotation[:,0] * num12
-    num7 = rotation[:,0] * num2
-    num6 = rotation[:,0] * num
-    num5 = rotation[:,1] * num2
-    num4 = rotation[:,1] * num
-    num3 = rotation[:,2] * num
+    r0,r1,r2,r3 = tf.unstack(rotation, axis=-1)
+    num12 = r0 + r0
+    num2 = r1 + r1
+    num = r2 + r2
+    num11 = r3 * num12
+    num10 = r3 * num2
+    num9 = r3 * num
+    num8 = r0 * num12
+    num7 = r0 * num2
+    num6 = r0 * num
+    num5 = r1 * num2
+    num4 = r1 * num
+    num3 = r2 * num
     num15 = ((value[:,0] * ((1. - num5) - num3)) + (value[:,1] * (num7 - num9))) + (value[:,2] * (num6 + num10))
     num14 = ((value[:,0] * (num7 + num9)) + (value[:,1] * ((1. - num8) - num3))) + (value[:,2] * (num4 - num11))
     num13 = ((value[:,0] * (num6 - num10)) + (value[:,1] * (num4 + num11))) + (value[:,2] * ((1. - num8) - num5))

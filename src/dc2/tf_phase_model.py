@@ -42,8 +42,7 @@ class PhaseModel(tf.keras.layers.Layer):
         res = tf.reshape(tf.gather_nd(batch_dims=1, params=srt, indices = ind//2),(-1,1))
         return res * tf.cast(ind > 0, tf.float32)
 
-    def call(self, inputs):
-        speed, quats = inputs
+    def call(self, speed):
         hsp = tf.reshape(speed-self.bias_shift/100,(-1,1,3))
         mes_est = tf.reduce_sum(self.dir*hsp, axis = -1) - self.mes + self.bias_sat/100
         med = self.calc_median(mes_est, self.weight)
