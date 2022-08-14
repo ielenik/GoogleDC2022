@@ -176,7 +176,7 @@ def calc_track_speed(trip_id):
 
     cur_measure = preload_gnss_log(f'{GOOGLE_DATA_ROOT}{trip_id}')
     st_seg = 0
-    en_seg = None
+    en_seg = 250
     # st_seg = 1180
     # en_seg = 1220
 
@@ -534,10 +534,10 @@ def calc_track_speed(trip_id):
                 # quat_loss = tf.concat([[0.],quat_loss*firstlast_epoch], axis = 0)
                 # speed_loss = tf.concat([[0.],speed_loss*firstlast_epoch], axis = 0)
                 # acs_loss = tf.concat([[0.],acs_loss*firstlast_epoch], axis = 0)
-                imu_loss = acs_loss + quat_loss/10 + speed_loss/10
+                imu_loss = acs_loss/10 + quat_loss + speed_loss/10
                 dir_loss = quat_loss + acs_loss/10 + speed_loss/100
                 #total_loss = 100*(phase_loss/3  + dopler_loss/3 + psevdo_loss/10 + speed_loss + acs_loss*10 + quat_loss*10 + speeds_sum_loss/50)
-                total_loss = 1000*(psevdo_loss/100 + acs_loss + quat_loss + speed_loss/100 + speeds_sum_loss/1000)
+                total_loss = 1000*(acs_loss + quat_loss + speed_loss + speeds_sum_loss/1000)
                 total_mean_loss = tf.reduce_mean(total_loss)
                 # if not useimuloss:
                 # else:   
@@ -692,8 +692,9 @@ def calc_track_speed(trip_id):
             #optimizer = tf.keras.optimizers.SGD(learning_rate=lr, momentum=0.9)
             optimizer = tf.keras.optimizers.Adam(learning_rate=lr)#, epsilon= 0.0001)
             #optimizer = tf.keras.optimizers.SGD(learning_rate=lr)#, momentum=0.9)
+            train_step = tf.function(minimize_speederror).get_concrete_function(False, True, False, True, optimizer)
+        elif step == 2:
             train_step = tf.function(minimize_speederror).get_concrete_function(False, True, trainspeed, True, optimizer)
-        #elif step == 2:
         #    lr = 1e-3
         #elif step == 6:
         #    lr = 1e-3

@@ -184,7 +184,7 @@ def createRigidModel(epochtimes, acsvalues,acstimes,gyrvalues,gyrtimes, baseline
 
     fps = 30
     baseline_epochs = epochtimes.copy()
-    timedif = epochtimes[-1] - epochtimes[0] + 2
+    timedif = epochtimes[-1] - epochtimes[0] + 4
     nummesures = int(timedif*fps/1000)
 
     starttime = epochtimes[0] - 1000
@@ -207,5 +207,6 @@ def createRigidModel(epochtimes, acsvalues,acstimes,gyrvalues,gyrtimes, baseline
     acs_epochs = mat.dot(acs_epochs.T).T
 
     orientation = predict_angle(acs_epochs, np.concatenate([[gyr_epochs[0]],gyr_epochs], axis = 0),epochtimes,baseline_epochs,baselines, gt_np, fps)
+    orientation[:60] = orientation[61]
     return RigidModelImu(acs_epochs, gyr_epochs, orientation, fps)
     
