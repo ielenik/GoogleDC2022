@@ -19,7 +19,7 @@ class DoplerModel(tf.keras.layers.Layer):
         weight[weight < 0.5] = 0
         NaN = float("NaN")
         num_sput = np.sum(weight > 0, axis = -1)
-        weight[num_sput<10,:] = 0
+        weight[num_sput<10,:] = weight[num_sput<10,:]*0.1
         mes[weight == 0] = NaN
         for i in range(5):
             medians = np.zeros((8))

@@ -515,6 +515,7 @@ def calc_track_speed(trip_id):
                 #speeds_loss_glob = tf.abs(norm(speeds[1:])-norm(speeds[:-1]))
                 # speeds_loss_glob += (norm(speeds[1:])*norm(speeds[:-1]) - tf.reduce_sum(speeds[1:]*speeds[:-1], axis = -1))/10
                 sp = norm(speeds*1000./diffna(epoch_times))
+                small_speeds_loss = tf.reduce_sum(sp[sp < 0.5])
                 acs = sp[1:]-sp[:-1]
                 acs = tf.concat([acs,[0.]], axis = 0)
                 speeds_loss_glob = tf.square(acs)#norm(acs)*10+
@@ -537,7 +538,7 @@ def calc_track_speed(trip_id):
                 imu_loss = acs_loss/10 + quat_loss + speed_loss/10
                 dir_loss = quat_loss + acs_loss/10 + speed_loss/100
                 #total_loss = 100*(phase_loss/3  + dopler_loss/3 + psevdo_loss/10 + speed_loss + acs_loss*10 + quat_loss*10 + speeds_sum_loss/50)
-                total_loss = 10*(acs_loss + quat_loss + speed_loss/10 + phase_loss*10  + dopler_loss)#  + speeds_sum_loss/1000)
+                total_loss = 10*(acs_loss + quat_loss + speed_loss/100 + phase_loss/100  + dopler_loss + small_speeds_loss + psevdo_loss/10)#  + speeds_sum_loss/1000)
                 total_mean_loss = tf.reduce_mean(total_loss)
                 # if not useimuloss:
                 # else:   
@@ -696,7 +697,9 @@ def calc_track_speed(trip_id):
         elif step == 2:
             train_step = tf.function(minimize_speederror).get_concrete_function(False, True, trainspeed, True, optimizer)
         #    lr = 1e-3
-        # elif step == 16:
+        # elif step == 10:
+        #     for i in range(16):
+        #         total_loss, phase_loss, dopler_loss, acs_loss, quat_loss, speed_loss,psevdo_loss, speeds_loss_glob, g, poses, stable_poses, gradients  = minimize_speederror(False, True, False, False, optimizer)
         #     lr = 1e-4
         #elif step == 12:
         #    train_step = tf.function(minimize_speederror).get_concrete_function(True, True, trainspeed, True, optimizer)
@@ -895,7 +898,7 @@ def calc_track_speed(trip_id):
             error_sh = ndimage.median_filter(pred_pos - baselines, (100,1))
             error_sh = pred_pos-true_pos
             error_sh_rot = error_sh
-            error_sh_rot = rotate(error_sh, ga)
+            #error_sh_rot = rotate(error_sh, ga)
 
             plt.clf()
             plt.plot( np.arange(len(true_pos)), error_sh_rot[:,0])

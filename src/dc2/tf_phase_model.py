@@ -18,7 +18,8 @@ class PhaseModel(tf.keras.layers.Layer):
         super(PhaseModel, self).__init__(**kwargs)
         NaN = float("NaN")
         num_sput = np.sum(weight > 0, axis = -1)
-        weight[num_sput<12,:] = weight[num_sput<12,:]*0.01
+        weight[num_sput<12,:] = weight[num_sput<12,:]*0.1
+        weight[num_sput<7,:] = weight[num_sput<7,:]*0.1
         mes[weight == 0] = NaN
         mes -= np.nanmedian(mes,axis=-1,keepdims=True)
         mes[weight == 0] = 0
@@ -48,7 +49,7 @@ class PhaseModel(tf.keras.layers.Layer):
         med = self.calc_median(mes_est, self.weight)
         mes_est -= med
         # 
-        loss = tf.reduce_mean(tf.tanh(tf.abs(mes_est)*self.weight/10)*10, axis = -1)
+        loss = tf.reduce_mean(tf.tanh(tf.abs(mes_est)*self.weight/30)*30, axis = -1)
         return loss
 
     def compute_output_shape(self, _):
