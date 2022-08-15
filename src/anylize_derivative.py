@@ -537,7 +537,7 @@ def calc_track_speed(trip_id):
                 imu_loss = acs_loss/10 + quat_loss + speed_loss/10
                 dir_loss = quat_loss + acs_loss/10 + speed_loss/100
                 #total_loss = 100*(phase_loss/3  + dopler_loss/3 + psevdo_loss/10 + speed_loss + acs_loss*10 + quat_loss*10 + speeds_sum_loss/50)
-                total_loss = 10*(acs_loss + quat_loss + speed_loss/10 + phase_loss  + dopler_loss)#  + speeds_sum_loss/1000)
+                total_loss = 10*(acs_loss + quat_loss + speed_loss/10 + phase_loss*10  + dopler_loss)#  + speeds_sum_loss/1000)
                 total_mean_loss = tf.reduce_mean(total_loss)
                 # if not useimuloss:
                 # else:   
@@ -696,8 +696,8 @@ def calc_track_speed(trip_id):
         elif step == 2:
             train_step = tf.function(minimize_speederror).get_concrete_function(False, True, trainspeed, True, optimizer)
         #    lr = 1e-3
-        elif step == 16:
-            lr = 1e-4
+        # elif step == 16:
+        #     lr = 1e-4
         #elif step == 12:
         #    train_step = tf.function(minimize_speederror).get_concrete_function(True, True, trainspeed, True, optimizer)
         #elif step == 24:
