@@ -24,7 +24,7 @@ class RigidModelImu(tf.keras.layers.Layer):
 
         self.down  = tf.Variable([[0.,0.,-1.]], trainable=False, dtype = tf.float32, name = 'down')
         self.fwd  = tf.Variable([[0.,1.,0.]], trainable=False, dtype = tf.float32, name = 'fwd')
-        self.right= tf.Variable([[1.,0.,0.]], trainable=False, dtype = tf.float32, name = 'right')
+        self.right_ang = tf.Variable(0, trainable=True, dtype = tf.float32, name = 'right')
         self.idquat = tf.Variable([[0.,0.,0.,1.]], trainable=False, dtype = tf.float32, name = 'idquat')
         self.north = self.fwd
 
@@ -52,8 +52,9 @@ class RigidModelImu(tf.keras.layers.Layer):
     def get_fwd(self, omega):
         return self.rotate_z(self.fwd, omega[:,2])
     def get_right(self, omega):
-        self.right.assign(tf.linalg.l2_normalize(self.right))
-        return self.rotate_z(self.right, omega[:,2])
+        
+        right = tf.stack([tf.cos(self.right_ang), tf.sin(self.right_ang), 0])
+        return self.rotate_z(right[tf.newaxis,:], omega[:,2])
     def get_up(self, omega):
         q = tf.stack([-tf.math.sin(omega[:,1]),-tf.math.cos(omega[:,1])*tf.math.sin(omega[:,0]),-tf.math.cos(omega[:,1])*tf.math.cos(omega[:,0])], axis = 1)
         return q
@@ -110,8 +111,10 @@ class RigidModelImu(tf.keras.layers.Layer):
         gyrl_dif = gyrl_pr-gyrl_tr
         gyrl_dif_average  = tf.reshape(tf.nn.avg_pool1d(tf.reshape(gyrl_dif,(1,-1,3)),5*60*30,1,'SAME'),(-1,3)) # five minutes
         gyrl_dif -= gyrl_dif_average
+        gyrl_dif = gyrl_dif*1000
 
-        quat_loss = tf.reduce_sum(tf.square(gyrl_dif*1000), axis = -1)# + 100*tf.reduce_mean(tf.square(self.gyro_bias[1:]-self.gyro_bias[:-1]))
+        quat_loss = tf.reduce_sum(tf.square(gyrl_dif), axis = -1)\
+                     #+ tf.reduce_mean(tf.square(gyrl_dif[1:]-gyrl_dif[:-1]))
 
         #quat_loss = quat_loss*1e-5 + tf.concat([[0],my_norm(angles_cum[1:] - angles_cum[:-1])], axis = 0)
 
@@ -184,7 +187,7 @@ def createRigidModel(epochtimes, acsvalues,acstimes,gyrvalues,gyrtimes, baseline
 
     fps = 30
     baseline_epochs = epochtimes.copy()
-    timedif = epochtimes[-1] - epochtimes[0] + 4
+    timedif = epochtimes[-1] - epochtimes[0] + 2000
     nummesures = int(timedif*fps/1000)
 
     starttime = epochtimes[0] - 1000

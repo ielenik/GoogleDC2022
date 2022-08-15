@@ -66,9 +66,9 @@ class DoplerModel(tf.keras.layers.Layer):
         bias_loss = tf.reduce_sum(tf.abs(self.bias[:,1:] - self.bias[:,:-1]), axis = 0)
         bias_loss = tf.concat([bias_loss, [0]],axis = 0)
 
-        loss = tf.reduce_mean(tf.abs(mes_est)*self.weight, axis = -1) + bias_loss
+        loss = tf.reduce_mean(tf.tanh(tf.abs(mes_est)*self.weight/10)*10, axis = -1) + bias_loss
         loss = tf.concat([[0],loss],axis = 0)
-        return loss 
+        return loss
 
     def compute_output_shape(self, _):
         return (1)

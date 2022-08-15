@@ -452,21 +452,21 @@ def calc_track_speed(trip_id):
     speeds = tf.Variable(speeds_init,trainable=True,dtype=tf.float32)
     speeds_np = speeds_init
 
-    tr_quat, pred_quat, dif_quat = imu_model.get_angles(epoch_times)
-    pred_quat,tr_quat, dif_quat = pred_quat*10, tr_quat*10, dif_quat*10
-    gyr_scale = 10
-    plt.clf()
-    plt.plot( np.arange(len(tr_quat)), tr_quat[:,0]*10)
-    plt.plot( np.arange(len(tr_quat)), tr_quat[:,1]*10+6)
-    plt.plot( np.arange(len(tr_quat)), tr_quat[:,2]+12)
-    plt.plot( np.arange(len(pred_quat)), pred_quat[:,0]*10+3)
-    plt.plot( np.arange(len(pred_quat)), pred_quat[:,1]*10+9)
-    plt.plot( np.arange(len(pred_quat)), pred_quat[:,2]+15)
-    plt.plot( np.arange(len(dif_quat)), gyr_scale*dif_quat[:,0] + 18)
-    plt.plot( np.arange(len(dif_quat)), gyr_scale*dif_quat[:,1] + 21)
-    plt.plot( np.arange(len(dif_quat)), gyr_scale*dif_quat[:,2] + 24)
-    plt.legend(['tx','ty','tz','px', 'py', 'pz','dx','dy', 'dz'])
-    plt.show()
+    # tr_quat, pred_quat, dif_quat = imu_model.get_angles(epoch_times)
+    # pred_quat,tr_quat, dif_quat = pred_quat*10, tr_quat*10, dif_quat*10
+    # gyr_scale = 10
+    # plt.clf()
+    # plt.plot( np.arange(len(tr_quat)), tr_quat[:,0]*10)
+    # plt.plot( np.arange(len(tr_quat)), tr_quat[:,1]*10+6)
+    # plt.plot( np.arange(len(tr_quat)), tr_quat[:,2]+12)
+    # plt.plot( np.arange(len(pred_quat)), pred_quat[:,0]*10+3)
+    # plt.plot( np.arange(len(pred_quat)), pred_quat[:,1]*10+9)
+    # plt.plot( np.arange(len(pred_quat)), pred_quat[:,2]+15)
+    # plt.plot( np.arange(len(dif_quat)), gyr_scale*dif_quat[:,0] + 18)
+    # plt.plot( np.arange(len(dif_quat)), gyr_scale*dif_quat[:,1] + 21)
+    # plt.plot( np.arange(len(dif_quat)), gyr_scale*dif_quat[:,2] + 24)
+    # plt.legend(['tx','ty','tz','px', 'py', 'pz','dx','dy', 'dz'])
+    # plt.show()
 
 
 
@@ -537,7 +537,7 @@ def calc_track_speed(trip_id):
                 imu_loss = acs_loss/10 + quat_loss + speed_loss/10
                 dir_loss = quat_loss + acs_loss/10 + speed_loss/100
                 #total_loss = 100*(phase_loss/3  + dopler_loss/3 + psevdo_loss/10 + speed_loss + acs_loss*10 + quat_loss*10 + speeds_sum_loss/50)
-                total_loss = 1000*(acs_loss + quat_loss + speed_loss + speeds_sum_loss/1000)
+                total_loss = 10*(acs_loss + quat_loss + speed_loss/10 + phase_loss  + dopler_loss)#  + speeds_sum_loss/1000)
                 total_mean_loss = tf.reduce_mean(total_loss)
                 # if not useimuloss:
                 # else:   
@@ -647,7 +647,7 @@ def calc_track_speed(trip_id):
         return tf.reduce_mean(x).numpy()
     
 
-    for step in range(0, 64):
+    for step in range(0, 256):
         # if step == -16:
         #     lr = 1e-3
         #     optimizer = tf.keras.optimizers.SGD(learning_rate=lr, momentum=0.9)
@@ -696,8 +696,8 @@ def calc_track_speed(trip_id):
         elif step == 2:
             train_step = tf.function(minimize_speederror).get_concrete_function(False, True, trainspeed, True, optimizer)
         #    lr = 1e-3
-        #elif step == 6:
-        #    lr = 1e-3
+        elif step == 16:
+            lr = 1e-4
         #elif step == 12:
         #    train_step = tf.function(minimize_speederror).get_concrete_function(True, True, trainspeed, True, optimizer)
         #elif step == 24:
