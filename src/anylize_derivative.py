@@ -8,6 +8,7 @@ import os
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import datetime
+from .dc2.tf_numpy_tools import get_values_at_indexes
 from src.utils.kml_writer import KMLWriter
 from pathlib import Path
 from scipy import ndimage, misc
@@ -210,10 +211,14 @@ def calc_track_speed(trip_id):
         gt_raw = pd.read_csv(f'{GOOGLE_DATA_ROOT}{trip_id}/ground_truth.csv')
         gt_np = gt_raw[['LatitudeDegrees','LongitudeDegrees','AltitudeMeters']].to_numpy()
         gt_npmillis = gt_raw['UnixTimeMillis'].to_numpy()
+        gt_yaw = gt_raw['BearingDegrees'].to_numpy()/180*PI
+        
         gt_np[np.isnan(gt_np)] = 0
         gt_np = geodetic2ecef(gt_np)
 
         gt_np = interp_nd(utcTimeMillis,gt_npmillis,gt_np)
+        gt_yaw = interp_nd(utcTimeMillis,gt_npmillis,gt_yaw)
+        gt_yaw = -(gt_yaw[1:]+gt_yaw[:-1])/2
     else:
         gt_np = baselines.copy()
 
@@ -400,8 +405,6 @@ def calc_track_speed(trip_id):
         print("Configuring Samsung - increasing psevdo weight")
         sat_psevdoweights *= 10
     psevdo_model = createPsevdoModel(sat_directions, sat_psevdo_shift, sat_psevdoweights, sat_types)
-    if not trainspeed:
-        psevdo_model.shift0.assign([gt_np[0]])
 
 
 
@@ -449,8 +452,10 @@ def calc_track_speed(trip_id):
 
 
     #speeds_init = ndimage.median_filter(speeds_init,size=(5,1))
-    speeds = tf.Variable(speeds_init,trainable=True,dtype=tf.float32)
-    speeds_np = speeds_init
+    time_range_len = (utcTimeMillis[-1] - utcTimeMillis[0] + 2000)*30//1000 + 1
+    times30hz = np.arange(time_range_len)*1000/30
+    baselines30hz = interp_nd(times30hz + utcTimeMillis[0] - 1000,utcTimeMillis,baselines)
+    poses30hz = tf.Variable(baselines30hz,trainable=True,dtype=tf.float32)
 
     # tr_quat, pred_quat, dif_quat = imu_model.get_angles(epoch_times)
     # pred_quat,tr_quat, dif_quat = pred_quat*10, tr_quat*10, dif_quat*10
@@ -478,7 +483,7 @@ def calc_track_speed(trip_id):
     pos_error = np.sort(pos_error)
     pos_error_abs = (pos_error[len(pos_error)//2] + pos_error[len(pos_error)*95//100])/2
     print("Baseline error:", pos_error_abs)
-    acsp, acsgt, acsr = imu_model.get_acses(speeds, gt_speed,epoch_times)
+    # acsp, acsgt, acsr = imu_model.get_acses(speeds, gt_speed,epoch_times)
     # plt.clf()
     # plt.ylim([-2,24])
     # plt.plot( np.arange(len(acsp)), acsp[:,0])
@@ -510,50 +515,29 @@ def calc_track_speed(trip_id):
             return x[1:] - x[:-1]
         def diffna(x):
             return (x[1:] - x[:-1])[:,tf.newaxis]
+
+
+
         for _ in range(4):
             with tf.GradientTape(persistent=True) as tape:
-                #speeds_loss_glob = tf.abs(norm(speeds[1:])-norm(speeds[:-1]))
-                # speeds_loss_glob += (norm(speeds[1:])*norm(speeds[:-1]) - tf.reduce_sum(speeds[1:]*speeds[:-1], axis = -1))/10
-                sp = norm(speeds*1000./diffna(epoch_times))
-                small_speeds_loss = tf.reduce_sum(sp[sp < 0.5])
-                acs = sp[1:]-sp[:-1]
-                acs = tf.concat([acs,[0.]], axis = 0)
-                speeds_loss_glob = tf.square(acs)#norm(acs)*10+
-                large_acs_loss = tf.square(tf.nn.relu(acs-5))#norm(acs)*10+
-                # acs = tf.concat([[[0.,0.,0.,]], acs], axis = 0)
-                # speeds_loss_glob += tf.reduce_sum(tf.abs(acs[1:] - acs[:-1]), axis = -1)
+                epoch_index_float = epoch_times*30/1000
+                speeds30hz = (poses30hz[1:] - poses30hz[:-1])*30
+                epoch_poses = get_values_at_indexes(epoch_index_float, poses30hz)
+                epoch_speeds = get_values_at_indexes(epoch_index_float, speeds30hz)
 
-                speeds_loss_Z = tf.square(speeds[:,2])
-                speeds_sum_loss = tf.reduce_mean(norm(speeds))
-                speeds_z_grad = (speeds*[0,0,1])/tf.reshape(0.1+norm(speeds),(-1,1))
-                phase_loss = phase_model(speeds)
-                dopler_loss = dopler_model([speeds,diffna(epoch_times)])
-                acs_loss, acs_grad, quat_loss, speed_loss, speed_grad, g, stable_poses = imu_model([speeds,epoch_times])
-                poses = tf.cumsum(speeds, axis = 0)
-                poses = tf.concat([[[0.,0.,0.]],poses], axis = 0)
-                psevdo_loss, psevdo_grad = psevdo_model(poses - baseline_stable)
+                phase_loss = phase_model(epoch_poses[1:] - epoch_poses[:-1])
+                dopler_loss = dopler_model(epoch_speeds)
+                acs_loss, acs_grad, quat_loss, speed_loss, speed_grad, g, stable_poses = imu_model(speeds30hz)
+                psevdo_loss, psevdo_grad = psevdo_model(epoch_poses - baseline_stable)
                 # quat_loss = tf.concat([[0.],quat_loss*firstlast_epoch], axis = 0)
                 # speed_loss = tf.concat([[0.],speed_loss*firstlast_epoch], axis = 0)
                 # acs_loss = tf.concat([[0.],acs_loss*firstlast_epoch], axis = 0)
                 imu_loss = acs_loss/10 + quat_loss + speed_loss/10
                 dir_loss = quat_loss + acs_loss/10 + speed_loss/100
                 #total_loss = 100*(phase_loss/3  + dopler_loss/3 + psevdo_loss/10 + speed_loss + acs_loss*10 + quat_loss*10 + speeds_sum_loss/50)
-                total_loss = 10*(acs_loss + quat_loss + speed_loss/100 + phase_loss/100  + dopler_loss + small_speeds_loss + psevdo_loss/10)#  + speeds_sum_loss/1000)
-                total_mean_loss = tf.reduce_mean(total_loss)
-                # if not useimuloss:
-                # else:   
-                #     total_loss = imu_loss + phase_loss*10 + psevdo_loss*10 + dopler_loss + speeds_loss_Z*10
+                total_loss = 10*((acs_loss + quat_loss + speed_loss/10) + psevdo_loss/10)#  + speeds_sum_loss/1000)
                 dopler_loss = dopler_loss + psevdo_loss/100# adjast bias?
                 phase_loss  = phase_loss  + psevdo_loss/100# adjast bias?
-                #imu_loss = imu_loss/100
-                # total_loss = tf.reduce_mean(total_loss)
-                # imu_loss = tf.reduce_mean(imu_loss)
-                # stable_poses = tf.concat([[0],stable_poses], axis=0)
-                # stable_loss = tf.reduce_mean(tf.abs(speeds*tf.reshape(stable_poses,(-1,1))))
-                # total_loss += stable_loss*100
-
-            # stable_poses = tf.concat([[0],stable_poses], axis=0)
-            # speeds.assign(speeds*(1-tf.reshape(stable_poses,(-1,1))))      
 
             
             gradients = {
@@ -563,49 +547,12 @@ def calc_track_speed(trip_id):
                 gr_scale = tf.linalg.norm(gr, axis = 0, keepdims=True) + 1e-3
                 return gr/tf.maximum(gr_scale,1)
 
-            gradients["phase"] = tape.gradient(phase_loss, [speeds])[0]/100.
-            gradients["dopler"] = tape.gradient(dopler_loss, [speeds])[0]/100.
-            gradients["speed_grad"]   = speed_grad
-            gradients["acs_grad"] = acs_grad
-            gradients["physics"] = tape.gradient(speeds_loss_glob, [speeds])[0]
-            #gradients["psevdo"] = psevdo_grad
-            gradients["psevdo"] = tape.gradient(psevdo_loss, [speeds])[0]
-            gradients["speeds_sum"] = tape.gradient(speeds_sum_loss, [speeds])[0]
-            gradients["total"] = tape.gradient(total_mean_loss, [speeds])[0]
-            #gradients["acs_grad"]   = norm_grad(gradients["acs_grad"]) 
-            #gradients["speed_grad"] = norm_grad(gradients["speed_grad"])
-            gradients["physics"] = norm_grad(gradients["physics"])
-            gradients["psevdo"]   = norm_grad(gradients["psevdo"])
-            #gradients["phase"] = norm_grad(gradients["phase"])*10
-            #gradients["dopler"]   = norm_grad(gradients["dopler"])*10
-
-            # grad = gradients["phase"]/100 + gradients["dopler"]/1000 + gradients["acs"]/1000 + gradients["speed"]/1000
-            # #- gradients["phase"]/10000
-            # grad = grad/(1e-4+tf.linalg.norm(grad, axis=-1, keepdims=True))/100
-            # speeds.assign_sub(grad)
-            # def aplly_grad_byerror(gr):
-            #     speeds_error = gt_speed - speeds
-            #     kf = 1./(1e-4+tf.square(tf.linalg.norm(gr,axis=0,keepdims=True)))
-            #     speeds.assign_sub(kf*gr/1000)
-            # aplly_grad_byerror(gradients["phase"])
-            # aplly_grad_byerror(gradients["dopler"])
-            # aplly_grad_byerror(gradients["acs"])
-            # aplly_grad_byerror(gradients["speed"])
-
             grads = tape.gradient(psevdo_loss, psevdo_model.trainable_weights)
             optimizer.apply_gradients(zip(grads, psevdo_model.trainable_weights))        
             
-            #psevdo_grad = psevdo_model.shift_pp[1:]-psevdo_model.shift_pp[:-1]
-            #gradients['psevdo'] = psevdo_grad
-
-            #optimizer.apply_gradients(zip([gradients["phase"] * 1e-4], [speeds]))   
-            #optimizer.apply_gradients(zip([gradients["dopler"]* 1e-5], [speeds]))   
-            # optimizer.apply_gradients(zip([gradients["psevdo"]* 1e-5], [speeds]))   
-            # optimizer.apply_gradients(zip([gradients["speed_grad"]*1e-6], [speeds]))   
-            # optimizer.apply_gradients(zip([gradients["acs_grad"]*3e-7], [speeds]))   
-            # optimizer.apply_gradients(zip([gradients["speeds_sum"]*2e-8], [speeds]))   
             if trainspeed:
-                optimizer.apply_gradients(zip([gradients["total"]], [speeds]))   
+                grads = tape.gradient(total_loss, [poses30hz])
+                optimizer.apply_gradients(zip(grads, [poses30hz]))   
             
             #optimizer.apply_gradients(zip([gradients["physics"]* 1e-6], [speeds]))   
             # if not useimuloss:
@@ -641,7 +588,7 @@ def calc_track_speed(trip_id):
             del tape
 
 
-        return  total_loss, phase_loss, dopler_loss, acs_loss, quat_loss, speed_loss, psevdo_loss, speeds_loss_Z, g, psevdo_model.get_poses(poses), stable_poses, gradients
+        return  total_loss, phase_loss, dopler_loss, acs_loss, quat_loss, speed_loss, psevdo_loss, g, epoch_poses
 
 
     def to_float(x):
@@ -662,13 +609,14 @@ def calc_track_speed(trip_id):
             optimizer = tf.keras.optimizers.Adam(learning_rate=lr)#, epsilon= 0.0001)
             #optimizer = tf.keras.optimizers.SGD(learning_rate=lr)#, momentum=0.9)
             for i in range(1):
-                total_loss, phase_loss, dopler_loss, acs_loss, quat_loss, speed_loss,psevdo_loss, speeds_loss_glob, g, poses, stable_poses, gradients  = minimize_speederror(False, True, False, False, optimizer)
+                total_loss, phase_loss, dopler_loss, acs_loss, quat_loss, speed_loss,psevdo_loss, g, poses = minimize_speederror(False, True, False, False, optimizer)
+                poses = poses.numpy()
 
-                speeds_init_pred = speeds_np = speeds.numpy()
+                speeds_init_pred = speeds_np = poses[1:] - poses[:-1]
                 speeds_e = np.linalg.norm((speeds_init_pred-speeds_init_gt)[:,:2],axis=-1)
                 
                 true_pos = gt_np
-                pred_pos = poses.numpy()#+np.array([[-1.5,+0.5,0]])
+                pred_pos = poses
                 pred_pos = pred_pos + np.median(true_pos-pred_pos, axis = 0)
                 pos_error = np.linalg.norm((true_pos-pred_pos)[:,:2],axis=-1)
                 pos_error = np.sort(pos_error)
@@ -732,15 +680,13 @@ def calc_track_speed(trip_id):
 
         if step != 0:
             for i in range(128):
-                total_loss, phase_loss, dopler_loss, acs_loss, quat_loss, speed_loss,psevdo_loss, speeds_loss_glob, g, poses, stable_poses, gradients  = train_step()
+                total_loss, phase_loss, dopler_loss, acs_loss, quat_loss, speed_loss,psevdo_loss, g, poses = train_step()
+                poses = poses.numpy()
 
-        speeds_init_pred = speeds_np = speeds.numpy()
+        speeds_init_pred = speeds_np = poses[1:] - poses[:-1]
         true_pos = gt_np
         speeds_e = np.mean(np.linalg.norm((speeds_init_pred-speeds_init_gt)[:,:2],axis=-1))
     
-    
-
-        poses = poses.numpy()
         
         #poses = np.cumsum(speeds_np, axis = 0)
         #poses = np.concatenate([[[0.,0.,0.]],poses], axis = 0)
@@ -773,7 +719,6 @@ def calc_track_speed(trip_id):
             speeds_e,
             )
             ,shift_median
-            ,imu_model.time_shift_acel.numpy()
             )#, end='\r')
         # print(imu_model.conv_filters_gyro.numpy().reshape((-1))/np.sum(imu_model.conv_filters_gyro.numpy()))
         # print(imu_model.conv_filters_acel.numpy().reshape((-1))/np.sum(imu_model.conv_filters_acel.numpy()))
@@ -829,7 +774,7 @@ def calc_track_speed(trip_id):
                     res.append(rotate(v,ang))
                 return res
             # speed_loss = conv_numpy(speed_loss)
-            acsp, acsgt, acsr = imu_model.get_acses(speeds, gt_speed,epoch_times)
+            acsp, acsgt, acsr = imu_model.get_acses(poses[1:]-poses[:-1], gt_speed,epoch_times)
             acsp_rot, acsgt_rot, acsr_rot = rotate_all([acsp, acsgt, acsr], ga)
 
             plt.clf()
@@ -864,6 +809,7 @@ def calc_track_speed(trip_id):
             # plt.plot( np.arange(len(speed_loss)), speed_loss)
 
 
+            '''
             axes = ['_x','_y']
             for i in range(2):
                 leg = ['t', 'p', 'd']
@@ -883,7 +829,7 @@ def calc_track_speed(trip_id):
                 plt.legend(leg)
                 plt.grid()
                 save_fig(image_path+'spd\\speed_diff'+axes[i]+str(step).zfill(3)+'.png')
-
+            '''
             ga = np.append(ga,ga[-1])
             # plt.plot( np.arange(len(speeds_init_gt)), speeds_init_gt[:,0])
             # plt.plot( np.arange(len(speeds_init_gt)), speeds_init_gt[:,1])
@@ -925,7 +871,7 @@ def calc_track_speed(trip_id):
             save_fig(image_path+'sft\\track_shift'+str(step).zfill(3)+'.png')
 
             plt.clf()
-            speeds_np = speeds.numpy()
+            speeds_np = poses[1:]-poses[:-1]
             speeds_np = speeds_np/(np.linalg.norm(speeds_np, axis=-1,keepdims=True) + 0.5)
             speeds_np1 = gt_np[1:]-gt_np[:-1]
             speeds_np1 = speeds_np1/(np.linalg.norm(speeds_np1, axis=-1,keepdims=True) + 0.5)
@@ -960,18 +906,21 @@ def calc_track_speed(trip_id):
             plt.clf()
             ta = np.arctan2(-speeds_init_gt[:,0], speeds_init_gt[:,1])
             pa = np.arctan2(-speeds_init_pred[:,0], speeds_init_pred[:,1])
-            ta[np.linalg.norm(speeds_init_gt, axis=-1)<0.1] = NaN
-            pa[np.linalg.norm(speeds_init_pred, axis=-1)<0.1] = NaN
+            ta[np.linalg.norm(speeds_init_gt, axis=-1)<0.3] = NaN
+            pa[np.linalg.norm(speeds_init_pred, axis=-1)<0.3] = NaN
             ga = imu_model.get_yaw(epoch_times)
             ga = (ga[1:]+ga[:-1])/2
 
             ta = ta - np.round((ta-ga)/PI)*PI
             pa = pa - np.round((pa-ga)/PI)*PI
+            gt_yaw = gt_yaw - np.round((gt_yaw-ga)/PI)*PI
 
             plt.plot( np.arange(len(pa)), pa)
             plt.plot( np.arange(len(ta)), ta)
+            plt.plot( np.arange(len(gt_yaw)), gt_yaw)
             plt.plot( np.arange(len(ga)), ga)
-            plt.legend(['pa', 'ta', 'ga'])
+            
+            plt.legend(['pa', 'ta', 'bearing', 'ga'])
             save_fig(image_path+'crs\\crs_'+str(step).zfill(3)+'.png')
             
             kml = KMLWriter(image_path+ "kml\\0_"+str(step).zfill(3)+".kml", "predicted")

@@ -143,3 +143,13 @@ class MagnetCallibration(tf.keras.layers.Layer):
 
         self.add_loss(tf.abs(1-magx - magy - magz))
         return 1-magx - magy - magz
+
+
+@tf.function
+def get_values_at_indexes(indexes_float, values):
+    indexes_int = tf.cast(indexes_float,tf.int32)
+    indexes_rest = (indexes_float - tf.cast(indexes_int,tf.float32))[:,tf.newaxis]
+    values_0 = tf.gather(values, indexes_int, axis=0)
+    values_1 = tf.gather(values, indexes_int+1, axis=0)
+
+    return values_0 * (1-indexes_rest) + values_1 * indexes_rest

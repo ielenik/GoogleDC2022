@@ -33,10 +33,6 @@ class DoplerModel(tf.keras.layers.Layer):
         weight[mes > 40] = 0
         mes[weight == 0] = 0
 
-        dir = dir[1:-1]
-        mes = mes[1:-1]
-        weight = weight[1:-1]
-
         self.dir  = tf.Variable(dir, name = 'dir', trainable=False, dtype = tf.float32)
         self.mes  = tf.Variable(mes, name = 'mes', trainable=False, dtype = tf.float32)
         self.weight  = tf.Variable(weight, name = 'weight', trainable=False, dtype = tf.float32)
@@ -55,20 +51,15 @@ class DoplerModel(tf.keras.layers.Layer):
         return res * tf.cast(ind > 0, tf.float32)
 
     def call(self, inputs):
-        speed, times_dif = inputs
-        speed = speed*1000/times_dif
-        speed = (speed[1:]+speed[:-1])/2 + self.bias_shift/100
+        speed = inputs
+        speed = speed + self.bias_shift/100
         bias = tf.gather(self.bias, self.types)
         speed = tf.reshape(speed,(-1,1,3))
         bias = tf.transpose(bias)
         mes_est = tf.reduce_sum(self.dir*speed, axis = -1)  - self.mes  + bias
         mes_est -= self.calc_median(mes_est,self.weight)
         bias_loss = tf.reduce_sum(tf.abs(self.bias[:,1:] - self.bias[:,:-1]), axis = 0)
-        bias_loss = tf.concat([bias_loss, [0]],axis = 0)
-
-        loss = tf.reduce_mean(tf.tanh(tf.abs(mes_est)*self.weight/10)*10, axis = -1) + bias_loss
-        loss = tf.concat([[0],loss],axis = 0)
-        return loss
+        return tf.reduce_mean(tf.tanh(tf.abs(mes_est)*self.weight/10)*10) + tf.reduce_mean(bias_loss)
 
     def compute_output_shape(self, _):
         return (1)
