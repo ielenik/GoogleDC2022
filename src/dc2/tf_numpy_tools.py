@@ -9,6 +9,7 @@ import random
 from ..utils.magnet_model import Magnetometer
 
 from tensorflow.python.framework import function
+import tensorflow_probability as tfp
 
 
 @tf.custom_gradient
@@ -57,6 +58,21 @@ def inv(a):
 
 def inv_np(a):
     return a * [-1,-1,-1,1]
+
+@tf.function
+def callconv(inputs, conv_filters, padding = 'SAME', scale = 1):
+    inputs = tf.expand_dims(tf.transpose(inputs),axis=-1)
+    inputs = tf.nn.conv1d(inputs, conv_filters, scale, padding = padding)
+    inputs = tf.squeeze(inputs)
+    return tf.transpose(inputs)
+
+def gaussian_kernel(size):
+    std = size/4
+    mean = 0
+    d = tfp.distributions.Normal(tf.cast(mean, tf.float32), tf.cast(std, tf.float32))
+    vals = d.prob(tf.range(start=-size, limit=size+1, dtype=tf.float32))
+    kernel = vals   # Some reshaping is required here
+    return tf.reshape(kernel / tf.reduce_sum(kernel),(-1,1,1))
 
 def to_quat(omega, dt = 1):
     omegaMagnitude = np.linalg.norm(omega)

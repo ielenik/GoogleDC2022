@@ -56,7 +56,7 @@ class DoplerModel(tf.keras.layers.Layer):
         return res * tf.cast(ind > 0, tf.float32)
 
     def call(self, inputs):
-        speed, quats, times_dif = inputs
+        speed, times_dif = inputs
         speed = speed*1000/times_dif
         speed = tf.concat([speed,[speed[-1]]], axis = 0)
         speed = (speed[2:]*self.time_shift[0]+speed[1:-1]*self.time_shift[1]+speed[:-2]*self.time_shift[2])/tf.reduce_sum(self.time_shift) + self.bias_shift/100
