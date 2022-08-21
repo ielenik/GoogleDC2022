@@ -47,7 +47,7 @@ class PsevdoModel(tf.keras.layers.Layer):
 
         self.bias   = tf.Variable(calc_bias(baselines), name = 'bias', trainable=True, dtype = tf.float32)
         self.epoch_bias   = tf.Variable(np.zeros((len(baselines),1)), name = 'epoch_bias', trainable=True, dtype = tf.float32)
-        self.shift0  = tf.Variable(np.array([baselines[0]]), name = 'shift0', trainable=False, dtype = tf.float32)
+        #self.shift0  = tf.Variable(np.array([baselines[0]]), name = 'shift0', trainable=False, dtype = tf.float32)
         #self.shift_pp  = tf.Variable(np.zeros((len(mes),3)), name = 'shift_pp', trainable=True, dtype = tf.float32)
         #self.speedShift  = tf.Variable(np.zeros((3,3)), name = 'speedShift', trainable=True, dtype = tf.float32)
         #self.shift1  = tf.Variable(np.zeros((1,3)), name = 'shift1', trainable=True, dtype = tf.float32)
@@ -60,7 +60,7 @@ class PsevdoModel(tf.keras.layers.Layer):
     
     def get_poses(self, inpt, use_bias = True):
         poses, speeds = inpt
-        pos_shift = poses + self.shift0 #+ tf.matmul(speeds,self.speedShift) #+ self.shift_pp#  #+ self.shift1*times
+        pos_shift = poses #+ tf.matmul(speeds,self.speedShift) #+ self.shift_pp#  #+ self.shift1*times
         return pos_shift
 
     def calc_median(self, mes, weights):
@@ -87,17 +87,12 @@ class PsevdoModel(tf.keras.layers.Layer):
 
 
         grad = tf.reduce_sum(self.dir*dir_error[:,:,tf.newaxis], axis = 1)
-        grad_mean = tf.reduce_mean(grad, axis = 0, keepdims=True)
-        grad -= grad_mean
-        self.shift0.assign_sub(grad_mean/10)
-
         #grad = callconv(grad,self.gaus_kernel)
         #grad = tf.reshape(tf.nn.avg_pool1d(tf.reshape(grad,(1,-1,3)),30,1,'SAME'),(-1,3))
         # grad = grad[::-1]
         # grad = tf.cumsum(grad,axis = 0)
         # grad = grad[::-1]/100
         #grad = grad/(tf.maximum(tf.linalg.norm(grad, axis = 0),1))
-        grad = grad[1:] - grad[:-1]
         return tf.reduce_mean(loss)\
              + tf.reduce_mean(tf.reduce_sum(tf.square(self.bias[:,1:]-self.bias[:,:-1]), axis = 0))*1e-2\
             , grad

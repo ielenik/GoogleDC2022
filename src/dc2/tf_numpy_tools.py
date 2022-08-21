@@ -59,6 +59,23 @@ def inv(a):
 def inv_np(a):
     return a * [-1,-1,-1,1]
 
+'''
+@tf.function
+def callconv(inputs, conv_filters, padding = 'SAME', scale = 1):
+    inputs = tf.expand_dims(inputs,axis=-1)
+    inputs = tf.expand_dims(inputs,axis=0)
+    inputs = tf.nn.conv2d(inputs, conv_filters, scale, padding = padding)
+    return tf.squeeze(inputs)
+
+def gaussian_kernel(size):
+    std = size/4
+    mean = 0
+    d = tfp.distributions.Normal(tf.cast(mean, tf.float32), tf.cast(std, tf.float32))
+    vals = d.prob(tf.range(start=-size, limit=size+1, dtype=tf.float32))
+    kernel = vals   # Some reshaping is required here
+    return tf.reshape(kernel / tf.reduce_sum(kernel),(-1,1,1,1))
+'''
+
 @tf.function
 def callconv(inputs, conv_filters, padding = 'SAME', scale = 1):
     inputs = tf.expand_dims(tf.transpose(inputs),axis=-1)

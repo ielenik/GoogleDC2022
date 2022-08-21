@@ -15,7 +15,6 @@ from tensorflow.python.framework import function
 from tensorflow.python.framework import function
 from .tf_numpy_tools import *
 
-angles_scale = 10.
 class RigidModelImu(tf.keras.layers.Layer):
     def __init__(self, acs, gyr, orientations, fps, **kwargs):
         super(RigidModelImu, self).__init__(**kwargs)
@@ -29,7 +28,7 @@ class RigidModelImu(tf.keras.layers.Layer):
         self.idquat = tf.Variable([[0.,0.,0.,1.]], trainable=False, dtype = tf.float32, name = 'idquat')
         self.north = self.fwd
 
-        self.angles_noscale  = tf.Variable(orientations*angles_scale, name = 'angles', trainable=True, dtype = tf.float32)
+        self.angles  = tf.Variable(orientations, name = 'angles', trainable=True, dtype = tf.float32)
         self.g      = tf.Variable([[9.81]], name = 'g', trainable=False, dtype = tf.float32)
         self.g_scale      = tf.Variable([[1]], name = 'g_scale', trainable=True, dtype = tf.float32)
         self.time_shift_acel      = tf.Variable(0, name = 'acel_timeshift', trainable=True, dtype = tf.float32)
@@ -37,7 +36,12 @@ class RigidModelImu(tf.keras.layers.Layer):
         #self.gyro_bias = tf.Variable(np.zeros_like(gyr), name = 'gyro_bias', trainable=True, dtype = tf.float32)
         self.accel_bias = tf.Variable([[0,0,0]], name = 'accel_bias', trainable=True, dtype = tf.float32)
         self.speed_kernel = gaussian_kernel(32)
-        self.gyr_kernel = gaussian_kernel(15*30)
+        self.gyr_kernel = gaussian_kernel(2*60*30)
+
+    def weights_no_angle(self):
+        return [self.g_scale,self.time_shift_acel,self.accel_bias]
+
+
 
     def build(self, input_shape):
         super(RigidModelImu, self).build(input_shape)
@@ -69,7 +73,6 @@ class RigidModelImu(tf.keras.layers.Layer):
         return self.gyr, tf.linalg.matvec(rot_mat_from_euler((self.angles[1:]+self.angles[:-1])/(2)), gyrpred)
 
     def call(self, inputs):
-        self.angles = self.angles_noscale/angles_scale
 
         speed, epoch_times = inputs
         speed = speed*1000/(epoch_times[1:] - epoch_times[:-1])[:,tf.newaxis]
@@ -94,18 +97,6 @@ class RigidModelImu(tf.keras.layers.Layer):
         acs_loss = tf.reduce_sum(tf.square(acs_grad), axis = -1) 
         #acs_loss = tf.reduce_sum(tf.square(acsi - acsr)+tf.abs(acsi - acsr)/1000, axis = -1)
  
-        orient_0 = tf.gather(self.angles, speed_indexes_int, axis=0)
-        orient_1 = tf.gather(self.angles, speed_indexes_int+1, axis=0)
-        # linear aproximation between two values shoud helps to find time shift
-        orient = orient_0 * (1-speed_indexes_rest) + orient_1 * speed_indexes_rest
-
-        right_dir = self.get_right(orient)
-        speed_grad = tf.reduce_sum(speed*right_dir, axis = -1)*1e-6
-        speed_grad = tf.sign(speed_grad)*tf.nn.relu(tf.abs(speed_grad) - 0.1) # alow 10 sant (phone vibration)
-        speed_loss = tf.nn.relu(tf.square(speed_grad))
-        speed_grad = tf.reshape(speed_grad,(-1,1))*right_dir
-
-
         pred_gyr = (self.angles[1:]-self.angles[:-1])
         gyrl_tr, gyrl_pr = self.get_local_gyr(pred_gyr)
         gyrl_dif = gyrl_pr-gyrl_tr
@@ -124,19 +115,22 @@ class RigidModelImu(tf.keras.layers.Layer):
             #+ tf.reduce_sum(tf.square(gyrl_dif2), axis = -1)\
                      #+ tf.reduce_mean(tf.square(gyrl_dif[1:]-gyrl_dif[:-1]))
 
-        #quat_loss = quat_loss*1e-5 + tf.concat([[0],my_norm(angles_cum[1:] - angles_cum[:-1])], axis = 0)
+        mid_angles = callconv(self.angles, self.speed_kernel)
+        orient_0 = tf.gather(mid_angles, speed_indexes_int, axis=0)
+        orient_1 = tf.gather(mid_angles, speed_indexes_int+1, axis=0)
+        # linear aproximation between two values shoud helps to find time shift
+        orient = orient_0 * (1-speed_indexes_rest) + orient_1 * speed_indexes_rest
+
+        right_dir = self.get_right(orient)
+        speed_grad = tf.reduce_sum(speed*right_dir, axis = -1)
+        speed_loss = tf.square(speed_grad)
+        speed_grad = tf.reshape(speed_grad,(-1,1))*right_dir
 
 
-        # gyr_stable = my_norm(gyrl_tr)
-        # acs_stable = my_norm(acsi)
-        # spd_stable = my_norm(speed[1:]+speed[:-1])
-        # stable_poses = tf.logical_and(tf.logical_and(gyr_stable<1e-3,acs_stable<1e-2),spd_stable<1e-1)
-        # stable_poses = tf.cast(stable_poses,tf.float32)
         
-        return tf.reduce_mean(acs_loss), acs_grad, tf.reduce_mean(quat_loss), tf.reduce_mean(speed_loss), speed_grad, self.g_scale, None
+        return tf.reduce_mean(acs_loss), acs_grad, tf.reduce_mean(quat_loss), speed_loss, speed_grad, self.g_scale
 
     def get_angles(self, epoch_times):
-        self.angles = self.angles_noscale/angles_scale
         pred_gyr = (self.angles[1:]-self.angles[:-1])   
         gyrl_tr, gyrl_pr = self.get_local_gyr(pred_gyr)
         gyrl_dif = gyrl_pr-gyrl_tr
@@ -148,7 +142,6 @@ class RigidModelImu(tf.keras.layers.Layer):
         return self.get_euler_tf(epoch_times).numpy()
 
     def get_euler_tf(self, epoch_times):
-        self.angles = self.angles_noscale/angles_scale
         speed_indexes_float = (epoch_times+self.time_shift_acel*1000)*self.fps/1000
         speed_indexes_int = tf.cast(speed_indexes_float,tf.int32)
         speed_indexes_rest = (speed_indexes_float - tf.cast(speed_indexes_int,tf.float32))[:,tf.newaxis]
@@ -167,7 +160,6 @@ class RigidModelImu(tf.keras.layers.Layer):
         return self.get_euler_tf(epoch_times)[:,2]
 
     def get_acses(self, speed, gt_speed, epoch_times):
-        self.angles = self.angles_noscale/angles_scale
         speed    = speed   *1000/(epoch_times[1:] - epoch_times[:-1])[:,np.newaxis]
         gt_speed = gt_speed*1000/(epoch_times[1:] - epoch_times[:-1])[:,np.newaxis]
 

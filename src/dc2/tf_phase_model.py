@@ -45,12 +45,14 @@ class PhaseModel(tf.keras.layers.Layer):
 
     def call(self, speed):
         hsp = tf.reshape(speed-self.bias_shift/100,(-1,1,3))
-        mes_est = tf.reduce_sum(self.dir*hsp, axis = -1) - self.mes + self.bias_sat/100
+        mes_est = tf.reduce_sum(self.dir*hsp, axis = -1) - self.mes + self.bias_sat/100 #- self.bias
         med = self.calc_median(mes_est, self.weight)
         mes_est -= med
         # 
-        loss = tf.reduce_mean(tf.tanh(tf.abs(mes_est)*self.weight/30)*30, axis = -1)
-        return loss
+        error = tf.tanh(mes_est*self.weight/30)*30
+        grad = tf.reduce_sum(error[:,:,tf.newaxis]*self.dir, axis = 1)
+        loss = tf.reduce_mean(tf.abs(error), axis = -1)
+        return loss, grad/3000
 
     def compute_output_shape(self, _):
         return (1)
