@@ -52,7 +52,7 @@ class PhaseModel(tf.keras.layers.Layer):
         error = tf.tanh(mes_est*self.weight/30)*30
         grad = tf.reduce_sum(error[:,:,tf.newaxis]*self.dir, axis = 1)
         loss = tf.reduce_mean(tf.abs(error), axis = -1)
-        return loss, grad/3000
+        return loss, grad/tf.reduce_max((tf.reduce_sum(self.weight, axis = -1, keepdims=True) + 1e-8))
 
     def compute_output_shape(self, _):
         return (1)

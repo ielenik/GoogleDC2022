@@ -59,6 +59,14 @@ def inv(a):
 def inv_np(a):
     return a * [-1,-1,-1,1]
 
+def tf_pad_before(x):
+    return tf.pad(x,[[1,0],[0,0]])
+
+def tf_pad_after(x):
+    return tf.pad(x,[[0,1],[0,0]])
+def tf_pad_dif(x):
+    return tf_pad_before(x) - tf_pad_after(x)
+
 '''
 @tf.function
 def callconv(inputs, conv_filters, padding = 'SAME', scale = 1):

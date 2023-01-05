@@ -157,3 +157,54 @@ def rot_mat_from_euler(angles,
     cos_angles = tf.cos(angles)
     return _build_rot_matrix_from_sines_and_cosines(sin_angles, cos_angles)
 
+def _build_inv_rot_matrix_from_sines_and_cosines(sin_angles, cos_angles) -> tf.Tensor:
+  """Builds a rotation matrix from sines and cosines of Euler angles.
+  Note:
+    In the following, A1 to An are optional batch dimensions.
+  Args:
+    sin_angles: A tensor of shape `[A1, ..., An, 3]`, where the last dimension
+      represents the sine of the Euler angles.
+    cos_angles: A tensor of shape `[A1, ..., An, 3]`, where the last dimension
+      represents the cosine of the Euler angles.
+  Returns:
+    A tensor of shape `[A1, ..., An, 3, 3]`, where the last two dimensions
+    represent a 3d rotation matrix.
+  """
+  sx, sy, sz = tf.unstack(sin_angles, axis=-1)
+  cx, cy, cz = tf.unstack(cos_angles, axis=-1)
+  id1 = tf.ones_like(sx)
+  id0 = tf.zeros_like(sx)
+  matrix = tf.stack((id1, sx*sy/cy, cx*sy/cy,
+                     id0,  cx, -sx,
+                     id0, sx/cy, cx/cy),
+                    axis=-1)  # pyformat: disable
+#   matrix = tf.stack((id1, id0,  id0,
+#                      id0, cx, -sx,
+#                      m20, m21, m22),
+#                     axis=-1)  # pyformat: disable
+  output_shape = tf.concat((tf.shape(input=sin_angles)[:-1], (3, 3)), axis=-1)
+  return tf.reshape(matrix, shape=output_shape)
+def inv_rot_mat_from_euler(angles,
+               name: str = "rotation_matrix_3d_from_euler") -> tf.Tensor:
+  r"""Convert an Euler angle representation to a rotation matrix.
+  The resulting matrix is $$\mathbf{R} = \mathbf{R}_z\mathbf{R}_y\mathbf{R}_x$$.
+  Note:
+    In the following, A1 to An are optional batch dimensions.
+  Args:
+    angles: A tensor of shape `[A1, ..., An, 3]`, where the last dimension
+      represents the three Euler angles. `[A1, ..., An, 0]` is the angle about
+      `x` in radians `[A1, ..., An, 1]` is the angle about `y` in radians and
+      `[A1, ..., An, 2]` is the angle about `z` in radians.
+    name: A name for this op that defaults to "rotation_matrix_3d_from_euler".
+  Returns:
+    A tensor of shape `[A1, ..., An, 3, 3]`, where the last two dimensions
+    represent a 3d rotation matrix.
+  Raises:
+    ValueError: If the shape of `angles` is not supported.
+  """
+  with tf.name_scope(name):
+    angles = tf.convert_to_tensor(value=angles)
+    sin_angles = tf.sin(angles)
+    cos_angles = tf.cos(angles)
+    return _build_rot_matrix_from_sines_and_cosines(sin_angles, cos_angles)
+

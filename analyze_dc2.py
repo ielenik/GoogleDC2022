@@ -19,10 +19,10 @@ start_path = "2021-07-19-US-MTV-1\\XiaomiMi8\\"
 start_path = "2021-07-01-US-MTV-1\\SamsungGalaxyS20Ultra\\"
 start_path = "2020-12-10-US-SJC-2\\XiaomiMi8\\" #BAD GT in begin and end
 start_path = "2021-04-26-US-SVL-2\\SamsungGalaxyS20Ultra\\" #2.5010
-start_path = "2020-05-29-US-MTV-1\\GooglePixel4\\" #<0.8
 start_path = "2021-12-09-US-LAX-2\\XiaomiMi8\\" #2.00
 start_path = "2021-01-04-US-SFO-2\\GooglePixel4XL\\" 
 start_path = "2021-12-07-US-LAX-2\\SamsungGalaxyS20Ultra\\" 
+start_path = "2021-08-04-US-SJC-1\\GooglePixel5\\" #<0.8
 # 21 D:\databases\smartphone-decimeter-2022\train\2020-06-04-US-MTV-2\GooglePixel4\ 30.048863979542947
 # 22 D:\databases\smartphone-decimeter-2022\train\2020-06-04-US-MTV-2\GooglePixel4XL\ 22.79417872266741
 # >>>>21 D:\databases\smartphone-decimeter-2022\train\2021-12-07-US-LAX-2\SamsungGalaxyS20Ultra\ 2.5455606420582226 71.50005846055423 ************** [-0.01511685 -0.04886644]
@@ -33,7 +33,7 @@ start_path = "2021-12-07-US-LAX-2\\SamsungGalaxyS20Ultra\\"
 
 #start_path = "*\\*\\"
 paths = gl.glob("D:\\databases\\smartphone-decimeter-2022\\train\\"+start_path)
-random.shuffle(paths)
+#random.shuffle(paths)
 existent = []
 
 

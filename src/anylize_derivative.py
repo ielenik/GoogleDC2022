@@ -178,8 +178,8 @@ def calc_track_speed(trip_id):
     os.makedirs(image_path+'\\lss', exist_ok=True)
 
     cur_measure = preload_gnss_log(f'{GOOGLE_DATA_ROOT}{trip_id}')
-    st_seg = 0
-    en_seg = None#250
+    st_seg = 100
+    en_seg = 1700#None#250
     # st_seg = 1180
     # en_seg = 1220
 
@@ -349,7 +349,7 @@ def calc_track_speed(trip_id):
     gt_speed = tf.Variable(speeds_init_gt,trainable=False,dtype=tf.float32)
 
     trainspeed = True
-    if False: # check on GT
+    if True: # check on GT
         trainspeed = False
         speeds_init = speeds_init_gt.copy()
         baselines = gt_np.copy()
@@ -459,8 +459,8 @@ def calc_track_speed(trip_id):
         baselines = baselines.reshape((-1,3))
 
     psevdo_model = createPsevdoModel(sat_directions, sat_psevdo_shift, sat_psevdoweights, sat_types, baselines - baseline_stable)
-    if not trainspeed:
-        psevdo_model.shift0.assign([gt_np[0]])
+    # if not trainspeed:
+    #     psevdo_model.shift0.assign([gt_np[0]])
 
     
     kml = KMLWriter(image_path+ "kml\\kml_baselines_filtered.kml", "predicted")
@@ -519,8 +519,9 @@ def calc_track_speed(trip_id):
     # plt.show()
 
     assign_scale = tf.Variable(1,trainable=False,dtype=tf.float32)
-    acs_smoof_kernel = gaussian_kernel(60*30)
+    acs_smoof_kernel = gaussian_kernel(15*30)
 
+    speeds = tf.Variable(diff(poses),trainable=True,dtype=tf.float32)
     def minimize_speederror(useimuloss, trainorient, trainspeed, rotate_gyro, optimizer):
         @tf.custom_gradient
         def norm(x):
@@ -533,20 +534,20 @@ def calc_track_speed(trip_id):
             return (x[1:] - x[:-1])[:,tf.newaxis]
         for _ in range(4):
             with tf.GradientTape(persistent=True) as tape:
-                speeds = diff(poses)
                 sp = norm(speeds*1000./diffna(epoch_times))
                 small_speeds_loss = tf.reduce_sum(sp[sp < 0.3])
 
                 phase_loss, phase_grad = phase_model(speeds)
                 dopler_loss = dopler_model([speeds,diffna(epoch_times)])
-                acs_loss, acs_grad, quat_loss, speed_loss, speed_grad, g = imu_model([speeds,epoch_times])
+                acs_loss, acs_grad, quat_loss, quat_grad, speed_loss, speed_grad, g = imu_model([speeds,epoch_times])
 
                 yaw = imu_model.get_yaw_tf(epoch_times)
                 dirs = tf.stack([tf.cos(yaw),tf.sin(yaw), tf.zeros_like(yaw)], axis = -1)
                 psevdo_loss, psevdo_grad = psevdo_model([poses - baseline_stable,dirs])
 
                 imu_loss = (quat_loss + acs_loss)
-                total_loss = 10*(1000*acs_loss + phase_loss + dopler_loss + psevdo_loss/100 + small_speeds_loss)
+                #total_loss = 10*(100*acs_loss + phase_loss + dopler_loss + psevdo_loss/100 + small_speeds_loss)
+                total_loss = phase_loss
 
                 dopler_loss = dopler_loss + psevdo_loss/100# adjast bias?
                 phase_loss  = phase_loss  + psevdo_loss/100# adjast bias?
@@ -568,29 +569,30 @@ def calc_track_speed(trip_id):
                 gr_scale = tf.linalg.norm(gr, axis = 0, keepdims=True) + 1e-3
                 return gr/tf.maximum(gr_scale,1)
 
-            gradients["phase"]      = tf.pad(phase_grad,[[1,0],[0,0]]) - tf.pad(phase_grad,[[0,1],[0,0]])
+            gradients["phase"]      = tf_pad_dif(phase_grad)
             gradients["dopler"]     = tape.gradient(dopler_loss, [poses])[0]/100.
-            gradients["acs_grad"]   = tf.pad(acs_grad,[[1,0],[0,0]]) - tf.pad(acs_grad,[[0,1],[0,0]])
-            gradients["speed_grad"]   = tf.pad(speed_grad,[[1,0],[0,0]]) - tf.pad(speed_grad,[[0,1],[0,0]])
+            gradients["acs_grad"]   = tf_pad_dif(acs_grad)
+            gradients["speed_grad"] = tf_pad_dif(speed_grad) 
             gradients["psevdo"]     = psevdo_grad/100
-            #gradients["total"]      = tape.gradient(total_loss, [poses])[0]
-            gradients["acs_grad"]   = norm_grad(gradients["acs_grad"]) 
+            gradients["total"]      = tape.gradient(total_loss, [speeds])[0]
+            #gradients["acs_grad"]   = norm_grad(gradients["acs_grad"]) 
             #gradients["total"]      = norm_grad(gradients["total"])
 
             grads = tape.gradient(acs_loss, [imu_model.angles])[0]
             grads = callconv(grads, acs_smoof_kernel)
-            imu_model.angles.assign_sub(grads/10)
-            grads = tape.gradient(quat_loss, [imu_model.angles])[0]
-            imu_model.angles.assign_sub(grads)
+            imu_model.angles.assign_sub(grads/3)
+            #grads = tape.gradient(quat_loss, [imu_model.angles])[0]
+            imu_model.angles.assign_sub(quat_grad/100)
 
 
             if trainspeed:
-                poses.assign_sub(assign_scale*gradients["psevdo"]/10000)
-                poses.assign_sub(assign_scale*gradients["acs_grad"]/3)
-                # poses.assign_sub(assign_scale*gradients["dopler"]/10)
-                poses.assign_sub(assign_scale*gradients["phase"])
+                #poses.assign_sub(assign_scale*gradients["psevdo"]/10000)
+                # poses.assign_sub(assign_scale*gradients["acs_grad"]/20)
+                # poses.assign_sub(assign_scale*gradients["dopler"])
+                #poses.assign_sub(assign_scale*gradients["phase"]/1000)
                 # poses.assign_sub(assign_scale*gradients["speed_grad"]/100)
-                # optimizer.apply_gradients(zip([gradients["total"]],  [poses]))        
+                optimizer.apply_gradients(zip([gradients["total"]],  [speeds]))        
+                speeds.assign_sub(phase_grad/10)
             
             
             grads = tape.gradient(psevdo_loss, psevdo_model.trainable_weights)
@@ -662,7 +664,9 @@ def calc_track_speed(trip_id):
         elif step == 2:
             lr = 1e-3
         elif step == 4:
-            train_step = tf.function(minimize_speederror).get_concrete_function(False, True, trainspeed, True, optimizer)
+            train_step = tf.function(minimize_speederror).get_concrete_function(False, True, True, True, optimizer)
+        elif step == 16:
+            train_step = tf.function(minimize_speederror).get_concrete_function(False, True, True, True, optimizer)
         elif step == 128:
             assign_scale.assign(0.1)
             lr = 1e-4
@@ -711,7 +715,7 @@ def calc_track_speed(trip_id):
     
     
 
-        speeds = diff(poses).numpy()
+        speeds_np = diff(poses).numpy()
         poses_np = poses.numpy()
         
 
@@ -918,7 +922,7 @@ def calc_track_speed(trip_id):
             save_fig(image_path+'sft\\track_shift'+str(step).zfill(3)+'.png')
 
             plt.clf()
-            speeds_np = speeds
+            speeds_np = speeds.numpy()
             speeds_np = speeds_np/(np.linalg.norm(speeds_np, axis=-1,keepdims=True) + 0.5)
             speeds_np1 = gt_np[1:]-gt_np[:-1]
             speeds_np1 = speeds_np1/(np.linalg.norm(speeds_np1, axis=-1,keepdims=True) + 0.5)

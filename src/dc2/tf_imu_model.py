@@ -36,7 +36,7 @@ class RigidModelImu(tf.keras.layers.Layer):
         #self.gyro_bias = tf.Variable(np.zeros_like(gyr), name = 'gyro_bias', trainable=True, dtype = tf.float32)
         self.accel_bias = tf.Variable([[0,0,0]], name = 'accel_bias', trainable=True, dtype = tf.float32)
         self.speed_kernel = gaussian_kernel(32)
-        self.gyr_kernel = gaussian_kernel(2*60*30)
+        self.gyr_kernel = gaussian_kernel(20*30)
 
     def weights_no_angle(self):
         return [self.g_scale,self.time_shift_acel,self.accel_bias]
@@ -67,10 +67,12 @@ class RigidModelImu(tf.keras.layers.Layer):
         return q
 
     def get_global_acs(self):
-        return tf.linalg.matvec(mat_from_euler(self.angles), self.acs+self.accel_bias)
+        return tf.linalg.matvec(mat_from_euler(self.angles), self.acs+self.accel_bias, transpose_a=False)
 
     def get_local_gyr(self, gyrpred):
-        return self.gyr, tf.linalg.matvec(rot_mat_from_euler((self.angles[1:]+self.angles[:-1])/(2)), gyrpred)
+        mat = tf.stop_gradient(inv_rot_mat_from_euler((self.angles[1:]+self.angles[:-1])/(2)))
+        return tf.linalg.matvec(mat, self.gyr, transpose_a=True), gyrpred
+        #return self.gyr, tf.linalg.matvec(tf.stop_gradient(rot_mat_from_euler((self.angles[1:]+self.angles[:-1])/(2))), gyrpred)
 
     def call(self, inputs):
 
@@ -102,16 +104,16 @@ class RigidModelImu(tf.keras.layers.Layer):
         gyrl_dif = gyrl_pr-gyrl_tr
         gyrl_dif_average  = callconv(gyrl_dif, self.gyr_kernel)
         gyrl_dif -= gyrl_dif_average
-        gyrl_pr -= gyrl_dif_average
+        gyrl_tr  += gyrl_dif_average
 
-        gyrl_tr_cum = tf.cumsum(gyrl_tr, axis = 0)
-        gyrl_pr_cum = tf.cumsum(gyrl_pr, axis = 0)
-        gyrl_dif2 = (gyrl_tr_cum-gyrl_pr_cum)*10
+        gyrl_tr_cum = tf_pad_before(tf.cumsum(gyrl_tr, axis = 0))
+        gyrl_dif2 = (gyrl_tr_cum-self.angles)
         #gyrl_dif_average2  = tf.reshape(tf.nn.avg_pool1d(tf.reshape(gyrl_dif2,(1,-1,3)),60*30,1,'SAME'),(-1,3)) # five minutes
         gyrl_dif_average2  = callconv(gyrl_dif2, self.gyr_kernel)
         gyrl_dif2 -= gyrl_dif_average2
 
-        quat_loss = tf.reduce_sum(tf.square(gyrl_dif2)+tf.square(gyrl_dif*100), axis = -1)\
+        quat_grad = -gyrl_dif2
+        quat_loss = tf.reduce_sum(tf.square(gyrl_dif2*10), axis = -1)\
             #+ tf.reduce_sum(tf.square(gyrl_dif2), axis = -1)\
                      #+ tf.reduce_mean(tf.square(gyrl_dif[1:]-gyrl_dif[:-1]))
 
@@ -128,7 +130,7 @@ class RigidModelImu(tf.keras.layers.Layer):
 
 
         
-        return tf.reduce_mean(acs_loss), acs_grad, tf.reduce_mean(quat_loss), speed_loss, speed_grad, self.g_scale
+        return tf.reduce_mean(acs_loss), acs_grad, tf.reduce_mean(quat_loss), quat_grad, speed_loss, speed_grad, self.g_scale
 
     def get_angles(self, epoch_times):
         pred_gyr = (self.angles[1:]-self.angles[:-1])   
